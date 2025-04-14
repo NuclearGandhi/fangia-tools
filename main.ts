@@ -148,24 +148,11 @@ export default class NumberedFiguresPlugin extends Plugin {
 		if (this.settings.debugMode) {
 			console.log('Processing figures in document:', ctx.sourcePath);
 			console.log('Figure mappings:', Object.fromEntries(fileMappings));
-			
-			el.findAll('img').forEach((img: HTMLImageElement) => {
-				console.log('Found image:', img.outerHTML);
-			});
-
-			// Check for img tags specifically
-			const imgTags = el.querySelectorAll('img');
-			console.log('Direct img tags found:', imgTags.length);
-			
-			if (imgTags.length > 0) {
-				Array.from(imgTags).forEach((img, index) => {
-					console.log(`Image ${index}:`, img.outerHTML);
-				});
-			}
 		}
 
-		let images = el.findAll('img');
-			
+		let images = document.querySelectorAll('img[src]') as NodeListOf<HTMLImageElement>;
+		if (this.settings.debugMode) console.log('Found images:', images.length);
+		
 		// Process each image (original method)
 		images.forEach((img: HTMLImageElement) => {
 			// Check if this is part of a figure we need to number
