@@ -11,12 +11,19 @@ interface FigureInfo {
 	figureId: string;      // The figure ID (if any)
 	figureNumber: string;  // The formatted figure number (e.g., "Figure 1-2")
 	imageSrc: string;      // The source path of the image
+	isHebrew: boolean;     // Whether the document is in Hebrew or not
 }
 
 // Default settings
 const DEFAULT_SETTINGS: NumberedFiguresSettings = {
 	// Default settings values
 	debugMode: false
+};
+
+// Define figure text based on language
+const FIGURE_TEXT = {
+	english: "Figure",
+	hebrew: "איור"
 };
 
 export default class NumberedFiguresPlugin extends Plugin {
@@ -99,10 +106,28 @@ export default class NumberedFiguresPlugin extends Plugin {
 		}
 	}
 
+	// Helper function to detect if content is in Hebrew based on first heading
+	isHebrewContent(content: string): boolean {
+		// Look for the first heading in the document
+		const headingMatch = content.match(/^#+\s+(.+)$/m);
+		if (headingMatch && headingMatch[1]) {
+			const headingText = headingMatch[1].trim();
+			// Check if the first character is a Hebrew character
+			// Hebrew Unicode range is \u0590-\u05FF
+			const firstChar = headingText.charAt(0);
+			return /[\u0590-\u05FF]/.test(firstChar);
+		}
+		return false;
+	}
+
 	// Scan document to identify all figures and their IDs
 	async scanDocumentForFigures(file: TFile) {
 		// Get the file content
 		const content = await this.app.vault.read(file);
+
+		// Detect if content is in Hebrew
+		const isHebrew = this.isHebrewContent(content);
+		if (this.settings.debugMode) console.log('Document language:', isHebrew ? 'Hebrew' : 'English');
 
 		// Extract the prefix from the filename
 		const fileName = file.basename;
@@ -119,12 +144,15 @@ export default class NumberedFiguresPlugin extends Plugin {
 		// Create a new array to store figure info for this file
 		const figuresForFile: FigureInfo[] = [];
 
+		// Get the appropriate figure text based on language
+		const figureText = isHebrew ? FIGURE_TEXT.hebrew : FIGURE_TEXT.english;
+
 		// Find all matches and create mappings
 		while ((match = regex.exec(content)) !== null) {
 			counter++;
 			const imageSrc = match[1].trim(); // The image path inside the brackets
 			const figureId = match[3] || ''; // The ID part after ^figure, if any
-			const figureNumber = `Figure ${prefix}-${counter}`;
+			const figureNumber = `${figureText} ${prefix}-${counter}`;
 
 			if (this.settings.debugMode) console.log('Found figure:', match[0], '→', figureNumber, 'with src:', imageSrc);
 
@@ -132,7 +160,8 @@ export default class NumberedFiguresPlugin extends Plugin {
 			figuresForFile.push({
 				figureId: figureId,
 				figureNumber: figureNumber,
-				imageSrc: imageSrc
+				imageSrc: imageSrc,
+				isHebrew: isHebrew
 			});
 		}
 
@@ -156,7 +185,6 @@ export default class NumberedFiguresPlugin extends Plugin {
 		}
 
 		if (this.settings.debugMode) console.log('Figure info found:', figureInfos);
-
 
 		let images = document.querySelectorAll('img[src]') as NodeListOf<HTMLImageElement>;
 		if (this.settings.debugMode) console.log('Found images:', images.length);
@@ -213,8 +241,17 @@ export default class NumberedFiguresPlugin extends Plugin {
 			// Log the paragraph text for debugging
 			if (this.settings.debugMode) console.log('Found caption paragraph:', paragraphText);
 
+			// Get language-specific figure text
+			const englishFigureText = FIGURE_TEXT.english;
+			const hebrewFigureText = FIGURE_TEXT.hebrew;
+
 			// Format the new text with the figure number at the start
-			let newText = matchingFigureInfo.figureNumber + ': ' + paragraphText.replace(/^Figure\s+[\w\d-]+:\s*/, '').trim();
+			// Replace any existing figure label (in either language) with the new one
+			let newText = matchingFigureInfo.figureNumber + ': ' + 
+				paragraphText
+					.replace(new RegExp(`^${englishFigureText}\\s+[\\w\\d-]+:\\s*`, 'i'), '')
+					.replace(new RegExp(`^${hebrewFigureText}\\s+[\\w\\d-]+:\\s*`, 'i'), '')
+					.trim();
 
 			// Update the paragraph text
 			paragraph.textContent = newText;
