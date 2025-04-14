@@ -151,7 +151,8 @@ export default class NumberedFiguresPlugin extends Plugin {
 			counter++;
 			const imageSrc = match[1].trim(); // The image path inside the brackets
 			const figureId = match[3] || ''; // The ID part after ^figure, if any
-			const figureNumber = `${figureText} ${prefix}-${counter}`;
+			// Use dot separator instead of hyphen
+			const figureNumber = `${figureText} ${prefix}.${counter}`;
 
 			if (this.settings.debugMode) console.log('Found figure:', match[0], '→', figureNumber, 'with src:', imageSrc);
 
@@ -245,10 +246,11 @@ export default class NumberedFiguresPlugin extends Plugin {
 
 			// Format the new text with the figure number at the start
 			// Replace any existing figure label (in either language) with the new one
+			// Updated to handle both hyphen and dot formats
 			let newText = matchingFigureInfo.figureNumber + ': ' + 
 				paragraphText
-					.replace(new RegExp(`^${englishFigureText}\\s+[\\w\\d-]+:\\s*`, 'i'), '')
-					.replace(new RegExp(`^${hebrewFigureText}\\s+[\\w\\d-]+:\\s*`, 'i'), '')
+					.replace(new RegExp(`^${englishFigureText}\\s+[\\w\\d.-]+:\\s*`, 'i'), '')
+					.replace(new RegExp(`^${hebrewFigureText}\\s+[\\w\\d.-]+:\\s*`, 'i'), '')
 					.trim();
 
 			// Update the paragraph text
