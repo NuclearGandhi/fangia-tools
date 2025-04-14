@@ -6,6 +6,13 @@ interface NumberedFiguresSettings {
 	debugMode: boolean;
 }
 
+// Define a more structured type for figure information
+interface FigureInfo {
+	figureId: string;      // The figure ID (if any)
+	figureNumber: string;  // The formatted figure number (e.g., "Figure 1-2")
+	imageSrc: string;      // The source path of the image
+}
+
 // Default settings
 const DEFAULT_SETTINGS: NumberedFiguresSettings = {
 	// Default settings values
@@ -15,8 +22,8 @@ const DEFAULT_SETTINGS: NumberedFiguresSettings = {
 export default class NumberedFiguresPlugin extends Plugin {
 	settings: NumberedFiguresSettings;
 	figureCounters: Map<string, number> = new Map();
-	// Store the figure ID mappings for each file
-	figureMappings: Map<string, Map<string, string>> = new Map();
+	// Store the figure information for each file using the new FigureInfo type
+	figureInfoByFile: Map<string, FigureInfo[]> = new Map();
 
 	async onload() {
 		console.log('Loading numbered-figures plugin');
@@ -26,9 +33,9 @@ export default class NumberedFiguresPlugin extends Plugin {
 		this.registerMarkdownCodeBlockProcessor("figure-id", (source, el, ctx) => {
 			// This is a hidden code block just to trigger processing
 			el.style.display = "none";
-			
+
 			if (this.settings.debugMode) console.log('figure-id code block processor triggered for', ctx.sourcePath);
-			
+
 			// Process the document on next tick to ensure all elements are loaded
 			setTimeout(() => this.processFiguresInDocument(el, ctx), 0);
 		});
@@ -38,15 +45,10 @@ export default class NumberedFiguresPlugin extends Plugin {
 			this.app.workspace.on('file-open', (file) => {
 				if (file) {
 					if (this.settings.debugMode) console.log('File opened:', file.path);
-					
+
 					// Reset counters for this file
 					this.figureCounters.set(file.path, 0);
-					
-					// Create a new mapping for this file if it doesn't exist
-					if (!this.figureMappings.has(file.path)) {
-						this.figureMappings.set(file.path, new Map());
-					}
-					
+
 					// Pre-process the document to identify all figures
 					this.scanDocumentForFigures(file);
 				}
@@ -60,7 +62,7 @@ export default class NumberedFiguresPlugin extends Plugin {
 
 		// Add settings tab
 		this.addSettingTab(new NumberedFiguresSettingTab(this.app, this));
-		
+
 		console.log('Numbered-figures plugin loaded');
 	}
 
@@ -82,9 +84,9 @@ export default class NumberedFiguresPlugin extends Plugin {
 		// Regular expression to extract prefix from filename patterns like:
 		// SLD1_002, HTF1_006, PME2_HW003, etc.
 		const prefixMatch = fileName.match(/[A-Z]+\d+_([A-Z]*\d+)/i);
-		
+
 		if (this.settings.debugMode) console.log('Extracting prefix from filename:', fileName, 'Match:', prefixMatch);
-		
+
 		if (prefixMatch && prefixMatch[1]) {
 			// Format the prefix - remove leading zeros
 			const prefix = prefixMatch[1].replace(/^0+/, '');
@@ -101,113 +103,123 @@ export default class NumberedFiguresPlugin extends Plugin {
 	async scanDocumentForFigures(file: TFile) {
 		// Get the file content
 		const content = await this.app.vault.read(file);
-		
+
 		// Extract the prefix from the filename
 		const fileName = file.basename;
 		const prefix = this.getFilePrefix(fileName);
-		
+
 		if (this.settings.debugMode) console.log('Scanning document for figures:', file.path);
-		
+
 		// Find all occurrences of image links with figure IDs
 		// This regex looks for Obsidian image links [[...]] followed immediately by ^figure
 		const regex = /\[\[(.*\.(png|jpg|jpeg|gif|bmp|svg|webp))[^\]]*\]\]\^figure([^\s]*)/g;
 		let match;
 		let counter = 0;
-		
-		// Create a new mapping for this file
-		const fileMapping = new Map<string, string>();
-		
+
+		// Create a new array to store figure info for this file
+		const figuresForFile: FigureInfo[] = [];
+
 		// Find all matches and create mappings
 		while ((match = regex.exec(content)) !== null) {
 			counter++;
+			const imageSrc = match[1].trim(); // The image path inside the brackets
 			const figureId = match[3] || ''; // The ID part after ^figure, if any
 			const figureNumber = `Figure ${prefix}-${counter}`;
-			
-			if (this.settings.debugMode) console.log('Found figure:', match[0], '→', figureNumber);
-			
-			// Store the mapping from ID to number
-			fileMapping.set(`^figure${figureId}`, figureNumber);
+
+			if (this.settings.debugMode) console.log('Found figure:', match[0], '→', figureNumber, 'with src:', imageSrc);
+
+			// Create a FigureInfo object and add it to our array
+			figuresForFile.push({
+				figureId: figureId,
+				figureNumber: figureNumber,
+				imageSrc: imageSrc
+			});
 		}
-		
+
 		if (this.settings.debugMode) console.log(`Found ${counter} figures in ${file.path}`);
-		
-		// Store the mappings for this file
-		this.figureMappings.set(file.path, fileMapping);
+
+		// Store the figure info for this file
+		this.figureInfoByFile.set(file.path, figuresForFile);
 		this.figureCounters.set(file.path, counter);
 	}
 
 	// Process figures in the rendered document
 	processFiguresInDocument(el: HTMLElement, ctx: MarkdownPostProcessorContext) {
-		// Get the mappings for this file
-		const fileMappings = this.figureMappings.get(ctx.sourcePath);
-		if (!fileMappings || fileMappings.size === 0) {
-			if (this.settings.debugMode) console.log('No figure mappings found for', ctx.sourcePath);
+		if (this.settings.debugMode) console.log('Processing figures in document:', ctx.sourcePath);
+
+		// Get the figure info for this file
+		const figureInfos = this.figureInfoByFile.get(ctx.sourcePath);
+		
+		if (!figureInfos || figureInfos.length === 0) {
+			if (this.settings.debugMode) console.log('No figure info found for', ctx.sourcePath);
 			return;
 		}
-		
-		if (this.settings.debugMode) {
-			console.log('Processing figures in document:', ctx.sourcePath);
-			console.log('Figure mappings:', Object.fromEntries(fileMappings));
-		}
+
+		if (this.settings.debugMode) console.log('Figure info found:', figureInfos);
+
 
 		let images = document.querySelectorAll('img[src]') as NodeListOf<HTMLImageElement>;
 		if (this.settings.debugMode) console.log('Found images:', images.length);
-		
-		// Process each image (original method)
+
+		// Process each image using source as identifier
 		images.forEach((img: HTMLImageElement) => {
-			// Check if this is part of a figure we need to number
+			// Get the image source
 			const imgSrc = img.getAttribute('src') || '';
-			if (this.settings.debugMode) console.log('Processing image:', imgSrc);
+			// Extract just the filename from the path (without query parameters)
+			const srcParts = imgSrc.split('/').pop()?.split('?')[0] || '';
+			// Decode the filename to handle any URL-encoded characters
+			const escapedSrcParts = decodeURIComponent(srcParts);			
+			if (this.settings.debugMode) console.log('Processing image:', imgSrc, 'extracted name:', escapedSrcParts);
 			
+			// Find matching figure info for this image
+			const matchingFigureInfo = figureInfos.find(info => 
+				imgSrc.includes(info.imageSrc) || 
+				info.imageSrc.includes(escapedSrcParts)
+			);
+			
+			// If no figure info found, skip this image
+			if (!matchingFigureInfo) {
+				if (this.settings.debugMode) console.log('No figure info found for image:', imgSrc);
+				return;
+			}
+			
+			if (this.settings.debugMode) console.log('Found matching figure:', matchingFigureInfo.figureNumber);
+
 			// Get the parent div containing the image
 			const imgContainer = img.closest('div') || img.parentElement;
 			if (!imgContainer) {
 				if (this.settings.debugMode) console.log('No parent container found for image');
 				return;
 			}
-			
+
 			// Now look for the next sibling which should be the caption container
 			let captionContainer = imgContainer.nextElementSibling;
-			
+
 			// If we found a potential caption container, check if it contains a blockquote
-			if (captionContainer) {
-				const blockquote = captionContainer.querySelector('blockquote');
-				if (blockquote) {
-					const paragraph = blockquote.querySelector('p');
-					if (paragraph) {
-						// This could be a caption paragraph, check if it contains any of our figure IDs
-						const paragraphText = paragraph.textContent || '';
-						
-						// Log the paragraph text for debugging
-						if (this.settings.debugMode) console.log('Found caption paragraph:', paragraphText);
-						
-						// Check if this paragraph contains any of our figure IDs
-						for (const [figureId, figureNumber] of fileMappings.entries()) {
-							if (paragraphText.includes(figureId)) {
-								// We found a match! This is a figure caption we need to number
-								if (this.settings.debugMode) console.log('Found matching figure ID:', figureId);
-								
-								// Replace the figure ID with the figure number
-								// But make sure to add it at the beginning of the caption if it's not already there
-								let newText: string;
-								if (paragraphText.trim().startsWith(figureId)) {
-									// If the ID is at the start, just replace it
-									newText = paragraphText.replace(figureId, figureNumber);
-								} else {
-									// Otherwise, remove the ID from wherever it is and add the figure number at the start
-									newText = figureNumber + ' ' + paragraphText.replace(figureId, '').trim();
-								}
-								
-								// Update the paragraph text
-								paragraph.textContent = newText;
-								
-								if (this.settings.debugMode) console.log('Updated caption to:', newText);
-								break; // Break once we've found and processed a match
-							}
-						}
-					}
-				}
-			}
+			if (!captionContainer)
+				return;
+
+			const blockquote = captionContainer.querySelector('blockquote');
+			if (!blockquote)
+				return;
+
+			const paragraph = blockquote.querySelector('p');
+			if (!paragraph)
+				return;
+
+			// This is a caption paragraph, update it with the figure number
+			const paragraphText = paragraph.textContent || '';
+
+			// Log the paragraph text for debugging
+			if (this.settings.debugMode) console.log('Found caption paragraph:', paragraphText);
+
+			// Format the new text with the figure number at the start
+			let newText = matchingFigureInfo.figureNumber + ': ' + paragraphText.replace(/^Figure\s+[\w\d-]+:\s*/, '').trim();
+
+			// Update the paragraph text
+			paragraph.textContent = newText;
+
+			if (this.settings.debugMode) console.log('Updated caption to:', newText);
 		});
 	}
 }
@@ -221,10 +233,10 @@ class NumberedFiguresSettingTab extends PluginSettingTab {
 	}
 
 	display(): void {
-		const {containerEl} = this;
+		const { containerEl } = this;
 
 		containerEl.empty();
-		containerEl.createEl('h2', {text: 'Numbered Figures Settings'});
+		containerEl.createEl('h2', { text: 'Numbered Figures Settings' });
 
 		new Setting(containerEl)
 			.setName('Debug Mode')
