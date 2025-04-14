@@ -11,7 +11,6 @@ interface FigureInfo {
 	figureId: string;      // The figure ID (if any)
 	figureNumber: string;  // The formatted figure number (e.g., "Figure 1-2")
 	imageSrc: string;      // The source path of the image
-	isHebrew: boolean;     // Whether the document is in Hebrew or not
 }
 
 // Default settings
@@ -160,8 +159,7 @@ export default class NumberedFiguresPlugin extends Plugin {
 			figuresForFile.push({
 				figureId: figureId,
 				figureNumber: figureNumber,
-				imageSrc: imageSrc,
-				isHebrew: isHebrew
+				imageSrc: imageSrc
 			});
 		}
 
