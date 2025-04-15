@@ -8,7 +8,8 @@ import {
 	MarkdownPostProcessorContext, 
 	TFile,
 	MarkdownRenderer,
-	EditorPosition
+	EditorPosition,
+	LinkCache
 } from 'obsidian';
 
 // Import CodeMirror editor extension types
@@ -33,6 +34,7 @@ interface FigureState {
 	filePath: string;
 	figures: FigureInfo[];
 	isProcessed: boolean;
+	referencesProcessed: boolean; // Track whether references have been processed
 }
 
 // Define effect for updating figure state
@@ -42,7 +44,7 @@ const updateFigureState = StateEffect.define<FigureState>();
 const figureStateField = StateField.define<FigureState>({
 	create(state: EditorState): FigureState {
 		// Initial empty state with default values
-		return { filePath: "", figures: [], isProcessed: false };
+		return { filePath: "", figures: [], isProcessed: false, referencesProcessed: false };
 	},
 	
 	update(oldState: FigureState, transaction: Transaction): FigureState {
@@ -196,7 +198,8 @@ function createFigureViewPlugin(plugin: NumberedFiguresPlugin) {
 			const effect = updateFigureState.of({ 
 				filePath, 
 				figures, 
-				isProcessed 
+				isProcessed,
+				referencesProcessed: false
 			});
 			
 			// Apply the effect to update state
@@ -207,11 +210,108 @@ function createFigureViewPlugin(plugin: NumberedFiguresPlugin) {
 	});
 }
 
+// Create a ViewPlugin to handle figure references based on state changes
+function createFigureReferencesViewPlugin(plugin: NumberedFiguresPlugin) {
+	return ViewPlugin.fromClass(class {
+		constructor(private view: EditorView) {
+			// Initial processing with small delay to ensure DOM is ready
+			setTimeout(() => this.processReferences(), 500);
+		}
+		
+		update(update: ViewUpdate) {
+			// Get the current figure state
+			const state = update.state.field(figureStateField);
+			
+			// Process figure references if document changed or references not yet processed
+			if (update.docChanged || !state.referencesProcessed) {
+				// Use a small delay to ensure rendered elements are available
+				setTimeout(() => this.processReferences(), 100);
+			}
+		}
+		
+		processReferences() {
+			// Get active file
+			const activeFile = plugin.app.workspace.getActiveFile();
+			if (!activeFile) return;
+			
+			const filePath = activeFile.path;
+			
+			// Get the parent element of the editor view
+			const contentEl = this.view.contentDOM.parentElement;
+			if (!contentEl) return;
+			
+			// Find all internal links in the document
+			const links = contentEl.querySelectorAll('a');
+			
+			if (plugin.settings.debugMode) console.log(`Found ${links.length} internal links to process for figure references`);
+			
+			let referencesFound = false;
+			
+			links.forEach((link) => {
+				if (plugin.settings.debugMode) console.log('Processing link:', link);
+				const href = link.getAttribute('href') || '';
+				const linkText = link.textContent || '';
+				
+				// Check if the link contains a block reference to a figure
+				if (href.includes('#^figure')) {
+					// Extract the figure ID from the href
+					const figureMatch = href.match(/#\^(figure[^&]*)/);
+					
+					if (figureMatch && figureMatch[1]) {
+						const figureId = figureMatch[1];
+						
+						// Look up the figure in the global registry
+						const figureInfo = plugin.globalFigureRegistry.get(figureId);
+						
+						if (figureInfo) {
+							// Replace the link text with the figure number
+							link.textContent = figureInfo.figureNumber;
+							referencesFound = true;
+							
+							if (plugin.settings.debugMode) {
+								console.log(`StateField transformed figure reference: ${linkText} → ${figureInfo.figureNumber}`);
+							}
+						} else if (plugin.settings.debugMode) {
+							console.log(`Could not find figure info for ID: ${figureId}`);
+						}
+					}
+				}
+			});
+			
+			// Update state to indicate references have been processed
+			this.updateReferencesState(filePath, referencesFound);
+		}
+		
+		updateReferencesState(filePath: string, referencesFound: boolean) {
+			// Get current state
+			const currentState = this.view.state.field(figureStateField);
+			
+			// Create a state update effect preserving existing state but updating references flag
+			const effect = updateFigureState.of({ 
+				...currentState,
+				filePath,
+				referencesProcessed: true
+			});
+			
+			// Apply the effect to update state
+			this.view.dispatch({
+				effects: [effect]
+			});
+			
+			if (plugin.settings.debugMode && referencesFound) {
+				console.log(`Updated state: references processed for ${filePath}`);
+			}
+		}
+	});
+}
+
 export default class NumberedFiguresPlugin extends Plugin {
 	settings: NumberedFiguresSettings;
 	figureCounters: Map<string, number> = new Map();
 	// Store the figure information for each file using the new FigureInfo type
 	figureInfoByFile: Map<string, FigureInfo[]> = new Map();
+	// Global map to track all figure IDs across files (figureId -> {filePath, figureNumber})
+	globalFigureRegistry: Map<string, {filePath: string, figureNumber: string}> = new Map();
 
 	async onload() {
 		console.log('Loading numbered-figures plugin');
@@ -243,15 +343,21 @@ export default class NumberedFiguresPlugin extends Plugin {
 			})
 		);
 
-		// Register our StateField and ViewPlugin editor extensions
+		// Register our StateField and ViewPlugin editor extensions for live preview mode
 		this.registerEditorExtension([
 			figureStateField,
-			createFigureViewPlugin(this)
+			createFigureViewPlugin(this),
+			createFigureReferencesViewPlugin(this)
 		]);
 
-		// Register the rendering processor as a fallback
+		// Register the rendering processor for figure numbering in reading view
 		this.registerMarkdownPostProcessor((el, ctx) => {
 			this.processFiguresInDocument(el, ctx);
+		});
+
+		// Register dedicated processor for figure references in reading view
+		this.registerMarkdownPostProcessor((el, ctx) => {
+			this.processFigureReferencesInReadingView(el, ctx);
 		});
 
 		// Add settings tab
@@ -349,7 +455,16 @@ export default class NumberedFiguresPlugin extends Plugin {
 				figureId: figureId,
 				figureNumber: figureNumber,
 				imageSrc: imageSrc
+				});
+			
+			// Register the figure ID globally with its number and file path
+			const figureRefId = `figure${figureId}`;
+			this.globalFigureRegistry.set(figureRefId, {
+				filePath: file.path,
+				figureNumber: figureNumber
 			});
+			
+			if (this.settings.debugMode) console.log(`Registered figure ID: ^${figureRefId} → ${figureNumber}`);
 		}
 
 		if (this.settings.debugMode) console.log(`Found ${counter} figures in ${file.path}`);
@@ -445,6 +560,83 @@ export default class NumberedFiguresPlugin extends Plugin {
 			paragraph.textContent = newText;
 
 			if (this.settings.debugMode) console.log('Updated caption to:', newText);
+		});
+	}
+
+	// Process figure references in links
+	processFigureReferences(el: HTMLElement, ctx: MarkdownPostProcessorContext) {
+		// Find all internal links in the document
+		const links = el.querySelectorAll('a.internal-link');
+		
+		if (this.settings.debugMode) console.log(`Found ${links.length} internal links to process for figure references`);
+		
+		links.forEach((link) => {
+			const href = link.getAttribute('href') || '';
+			const linkText = link.textContent || '';
+			
+			// Check if the link contains a block reference to a figure
+			if (href.includes('#^figure')) {
+				// Extract the figure ID from the href
+				const figureMatch = href.match(/#\^(figure[^&]*)/);
+				
+				if (figureMatch && figureMatch[1]) {
+					const figureId = figureMatch[1];
+					
+					// Look up the figure in the global registry
+					const figureInfo = this.globalFigureRegistry.get(figureId);
+					
+					if (figureInfo) {
+						// Replace the link text with the figure number
+						link.textContent = figureInfo.figureNumber;
+						
+						if (this.settings.debugMode) {
+							console.log(`Transformed figure reference: ${linkText} → ${figureInfo.figureNumber}`);
+						}
+					} else if (this.settings.debugMode) {
+						console.log(`Could not find figure info for ID: ${figureId}`);
+					}
+				}
+			}
+		});
+	}
+
+	// Process figure references in reading view
+	processFigureReferencesInReadingView(el: HTMLElement, ctx: MarkdownPostProcessorContext) {
+		if (this.settings.debugMode) console.log('Processing figure references in reading view for:', ctx.sourcePath);
+		
+		// Find all internal links in the document
+		const links = el.querySelectorAll('a');
+		
+		if (this.settings.debugMode) console.log(`Found ${links.length} internal links in reading view`);
+		
+		links.forEach((link) => {
+			if (this.settings.debugMode) console.log('Processing link in reading view:', link);
+			const href = link.getAttribute('href') || '';
+			const linkText = link.textContent || '';
+			
+			// Check if the link contains a block reference to a figure
+			if (href.includes('#^figure')) {
+				// Extract the figure ID from the href
+				const figureMatch = href.match(/#\^(figure[^&]*)/);
+				
+				if (figureMatch && figureMatch[1]) {
+					const figureId = figureMatch[1];
+					
+					// Look up the figure in the global registry
+					const figureInfo = this.globalFigureRegistry.get(figureId);
+					
+					if (figureInfo) {
+						// Replace the link text with the figure number
+						link.textContent = figureInfo.figureNumber;
+						
+						if (this.settings.debugMode) {
+							console.log(`Reading view transformed figure reference: ${linkText} → ${figureInfo.figureNumber}`);
+						}
+					} else if (this.settings.debugMode) {
+						console.log(`Reading view could not find figure info for ID: ${figureId}`);
+					}
+				}
+			}
 		});
 	}
 }
