@@ -15,6 +15,7 @@ import {
 // Import CodeMirror editor extension types
 import { EditorView, ViewPlugin, ViewUpdate, PluginValue } from '@codemirror/view';
 import { EditorState, StateField, StateEffect, Transaction, Extension } from '@codemirror/state';
+import { read } from 'fs';
 
 // Interface for plugin settings
 interface NumberedFiguresSettings {
@@ -77,233 +78,6 @@ const FIGURE_TEXT = {
 	hebrew: "איור"
 };
 
-// Create a ViewPlugin to process figures based on state changes
-function createFigureViewPlugin(plugin: NumberedFiguresPlugin) {
-	return ViewPlugin.fromClass(class {
-		constructor(private view: EditorView) {
-			// Initial processing
-			this.processFigures();
-		}
-		
-		update(update: ViewUpdate) {
-			// Get the current figure state
-			const state = update.state.field(figureStateField);
-			
-			// Process figures if state changed or document changed
-			if (update.docChanged || !state.isProcessed) {
-				this.processFigures();
-			}
-		}
-		
-		processFigures() {
-			// Get active file
-			const activeFile = plugin.app.workspace.getActiveFile();
-			if (!activeFile) return;
-			
-			const filePath = activeFile.path;
-			const figureInfos = plugin.figureInfoByFile.get(filePath);
-			
-			if (!figureInfos || figureInfos.length === 0) {
-				if (plugin.settings.debugMode) console.log('No figure info found for', filePath);
-				return;
-			}
-			
-			// Mark that we've started processing
-			this.updateState(filePath, figureInfos, false);
-			
-			if (plugin.settings.debugMode) console.log('Processing figures in:', filePath);
-			
-			// Get the parent element of the editor view
-			const contentEl = this.view.contentDOM.parentElement;
-			if (!contentEl) return;
-			
-			// Find all images in the view
-			const images = contentEl.querySelectorAll('img[src]') as NodeListOf<HTMLImageElement>;
-			if (plugin.settings.debugMode) console.log('Found images:', images.length);
-			
-			// Process each image
-			images.forEach((img: HTMLImageElement) => {
-				// Get the image source
-				const imgSrc = img.getAttribute('src') || '';
-				// Extract filename from path
-				const srcParts = imgSrc.split('/').pop()?.split('?')[0] || '';
-				// Decode URL-encoded characters
-				const escapedSrcParts = decodeURIComponent(srcParts);
-				
-				if (plugin.settings.debugMode) console.log('Processing image:', imgSrc, 'extracted name:', escapedSrcParts);
-				
-				// Find matching figure info
-				const matchingFigureInfo = figureInfos.find(info => 
-					imgSrc.includes(info.imageSrc) || 
-					info.imageSrc.includes(escapedSrcParts)
-				);
-				
-				// Skip if no match found
-				if (!matchingFigureInfo) {
-					if (plugin.settings.debugMode) console.log('No figure info found for image:', imgSrc);
-					return;
-				}
-				
-				this.applyFigureNumber(img, matchingFigureInfo);
-			});
-			
-			// Mark processing as complete
-			this.updateState(filePath, figureInfos, true);
-		}
-		
-		applyFigureNumber(img: HTMLImageElement, figureInfo: FigureInfo) {
-			if (plugin.settings.debugMode) console.log('Applying figure number:', figureInfo.figureNumber);
-			
-			// Get the container elements
-			const imgContainer = img.closest('div') || img.parentElement;
-			if (!imgContainer) {
-				if (plugin.settings.debugMode) console.log('No parent container found for image');
-				return;
-			}
-			
-			// Look for caption (next sibling with blockquote)
-			let captionContainer = imgContainer.nextElementSibling;
-			if (!captionContainer) return;
-			
-			const blockquote = captionContainer.querySelector('blockquote');
-			if (!blockquote) return;
-			
-			const paragraph = blockquote.querySelector('p');
-			if (!paragraph) return;
-			
-			// Get caption text and update it
-			const paragraphText = paragraph.textContent || '';
-			
-			if (plugin.settings.debugMode) console.log('Found caption paragraph:', paragraphText);
-			
-			// Get language-specific figure text
-			const englishFigureText = FIGURE_TEXT.english;
-			const hebrewFigureText = FIGURE_TEXT.hebrew;
-			
-			// Replace existing figure number with new one
-			let newText = figureInfo.figureNumber + ': ' + 
-				paragraphText
-					.replace(new RegExp(`^${englishFigureText}\\s+[\\w\\d.-]+:\\s*`, 'i'), '')
-					.replace(new RegExp(`^${hebrewFigureText}\\s+[\\w\\d.-]+:\\s*`, 'i'), '')
-					.trim();
-			
-			// Update paragraph text
-			paragraph.textContent = newText;
-			
-			if (plugin.settings.debugMode) console.log('Updated caption to:', newText);
-		}
-		
-		updateState(filePath: string, figures: FigureInfo[], isProcessed: boolean) {
-			// Create a state update effect
-			const effect = updateFigureState.of({ 
-				filePath, 
-				figures, 
-				isProcessed,
-				referencesProcessed: false
-			});
-			
-			// Apply the effect to update state
-			this.view.dispatch({
-				effects: [effect]
-			});
-		}
-	});
-}
-
-// Create a ViewPlugin to handle figure references based on state changes
-function createFigureReferencesViewPlugin(plugin: NumberedFiguresPlugin) {
-	return ViewPlugin.fromClass(class {
-		constructor(private view: EditorView) {
-			// Initial processing with small delay to ensure DOM is ready
-			setTimeout(() => this.processReferences(), 500);
-		}
-		
-		update(update: ViewUpdate) {
-			// Get the current figure state
-			const state = update.state.field(figureStateField);
-			
-			// Process figure references if document changed or references not yet processed
-			if (update.docChanged || !state.referencesProcessed) {
-				// Use a small delay to ensure rendered elements are available
-				setTimeout(() => this.processReferences(), 100);
-			}
-		}
-		
-		processReferences() {
-			// Get active file
-			const activeFile = plugin.app.workspace.getActiveFile();
-			if (!activeFile) return;
-			
-			const filePath = activeFile.path;
-			
-			// Get the parent element of the editor view
-			const contentEl = this.view.contentDOM.parentElement;
-			if (!contentEl) return;
-			
-			// Find all internal links in the document
-			const links = contentEl.querySelectorAll('a');
-			
-			if (plugin.settings.debugMode) console.log(`Found ${links.length} internal links to process for figure references`);
-			
-			let referencesFound = false;
-			
-			links.forEach((link) => {
-				if (plugin.settings.debugMode) console.log('Processing link:', link);
-				const href = link.getAttribute('href') || '';
-				const linkText = link.textContent || '';
-				
-				// Check if the link contains a block reference to a figure
-				if (href.includes('#^figure')) {
-					// Extract the figure ID from the href
-					const figureMatch = href.match(/#\^(figure[^&]*)/);
-					
-					if (figureMatch && figureMatch[1]) {
-						const figureId = figureMatch[1];
-						
-						// Look up the figure in the global registry
-						const figureInfo = plugin.globalFigureRegistry.get(figureId);
-						
-						if (figureInfo) {
-							// Replace the link text with the figure number
-							link.textContent = figureInfo.figureNumber;
-							referencesFound = true;
-							
-							if (plugin.settings.debugMode) {
-								console.log(`StateField transformed figure reference: ${linkText} → ${figureInfo.figureNumber}`);
-							}
-						} else if (plugin.settings.debugMode) {
-							console.log(`Could not find figure info for ID: ${figureId}`);
-						}
-					}
-				}
-			});
-			
-			// Update state to indicate references have been processed
-			this.updateReferencesState(filePath, referencesFound);
-		}
-		
-		updateReferencesState(filePath: string, referencesFound: boolean) {
-			// Get current state
-			const currentState = this.view.state.field(figureStateField);
-			
-			// Create a state update effect preserving existing state but updating references flag
-			const effect = updateFigureState.of({ 
-				...currentState,
-				filePath,
-				referencesProcessed: true
-			});
-			
-			// Apply the effect to update state
-			this.view.dispatch({
-				effects: [effect]
-			});
-			
-			if (plugin.settings.debugMode && referencesFound) {
-				console.log(`Updated state: references processed for ${filePath}`);
-			}
-		}
-	});
-}
 
 export default class NumberedFiguresPlugin extends Plugin {
 	settings: NumberedFiguresSettings;
@@ -342,13 +116,6 @@ export default class NumberedFiguresPlugin extends Plugin {
 				}
 			})
 		);
-
-		// Register our StateField and ViewPlugin editor extensions for live preview mode
-		this.registerEditorExtension([
-			figureStateField,
-			createFigureViewPlugin(this),
-			createFigureReferencesViewPlugin(this)
-		]);
 
 		// Register the rendering processor for figure numbering in reading view
 		this.registerMarkdownPostProcessor((el, ctx) => {
@@ -478,6 +245,12 @@ export default class NumberedFiguresPlugin extends Plugin {
 	processFiguresInDocument(el: HTMLElement, ctx: MarkdownPostProcessorContext) {
 		if (this.settings.debugMode) console.log('Processing figures in document:', ctx.sourcePath);
 
+		const readingView = document.body.querySelector('div.markdown-reading-view');
+		if (!readingView) {
+			if (this.settings.debugMode) console.log('No reading view found, skipping figure processing');
+			return;
+		}
+
 		// Get the figure info for this file
 		const figureInfos = this.figureInfoByFile.get(ctx.sourcePath);
 		
@@ -488,7 +261,7 @@ export default class NumberedFiguresPlugin extends Plugin {
 
 		if (this.settings.debugMode) console.log('Figure info found:', figureInfos);
 
-		let images = document.querySelectorAll('img[src]') as NodeListOf<HTMLImageElement>;
+		let images = readingView.querySelectorAll('img[src]') as NodeListOf<HTMLImageElement>;
 		if (this.settings.debugMode) console.log('Found images:', images.length);
 
 		// Process each image using source as identifier
@@ -516,9 +289,9 @@ export default class NumberedFiguresPlugin extends Plugin {
 			if (this.settings.debugMode) console.log('Found matching figure:', matchingFigureInfo.figureNumber);
 
 			// Get the parent div containing the image
-			const imgContainer = img.closest('div') || img.parentElement;
+			const imgContainer = img.closest('div.el-p');
 			if (!imgContainer) {
-				if (this.settings.debugMode) console.log('No parent container found for image');
+				if (this.settings.debugMode) console.log('No parent container found for image:', img.outerHTML);
 				return;
 			}
 
@@ -526,16 +299,23 @@ export default class NumberedFiguresPlugin extends Plugin {
 			let captionContainer = imgContainer.nextElementSibling;
 
 			// If we found a potential caption container, check if it contains a blockquote
-			if (!captionContainer)
+			if (!captionContainer) {
+				if (this.settings.debugMode) console.log('No caption container found for image');
 				return;
+			}
 
 			const blockquote = captionContainer.querySelector('blockquote');
-			if (!blockquote)
+			if (!blockquote) {
+				if (this.settings.debugMode) console.log('No blockquote found in caption container:', captionContainer.outerHTML);
+				if (this.settings.debugMode) console.log('img container:', imgContainer.outerHTML);
 				return;
+			}
 
 			const paragraph = blockquote.querySelector('p');
-			if (!paragraph)
+			if (!paragraph) {
+				if (this.settings.debugMode) console.log('No paragraph found in blockquote');
 				return;
+			}
 
 			// This is a caption paragraph, update it with the figure number
 			const paragraphText = paragraph.textContent || '';
@@ -610,7 +390,6 @@ export default class NumberedFiguresPlugin extends Plugin {
 		if (this.settings.debugMode) console.log(`Found ${links.length} internal links in reading view`);
 		
 		links.forEach((link) => {
-			if (this.settings.debugMode) console.log('Processing link in reading view:', link);
 			const href = link.getAttribute('href') || '';
 			const linkText = link.textContent || '';
 			
