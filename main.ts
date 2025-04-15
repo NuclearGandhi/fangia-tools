@@ -1,4 +1,19 @@
-import { App, Editor, MarkdownView, Plugin, PluginSettingTab, Setting, MarkdownPostProcessorContext, TFile } from 'obsidian';
+import { 
+	App, 
+	Editor, 
+	MarkdownView, 
+	Plugin, 
+	PluginSettingTab, 
+	Setting, 
+	MarkdownPostProcessorContext, 
+	TFile,
+	MarkdownRenderer,
+	EditorPosition
+} from 'obsidian';
+
+// Import CodeMirror editor extension types
+import { EditorView, ViewPlugin, ViewUpdate, PluginValue } from '@codemirror/view';
+import { EditorState, StateField, StateEffect, Transaction, Extension } from '@codemirror/state';
 
 // Interface for plugin settings
 interface NumberedFiguresSettings {
@@ -13,6 +28,41 @@ interface FigureInfo {
 	imageSrc: string;      // The source path of the image
 }
 
+// Interface for figure state tracking
+interface FigureState {
+	filePath: string;
+	figures: FigureInfo[];
+	isProcessed: boolean;
+}
+
+// Define effect for updating figure state
+const updateFigureState = StateEffect.define<FigureState>();
+
+// Create a StateField to track figure state
+const figureStateField = StateField.define<FigureState>({
+	create(state: EditorState): FigureState {
+		// Initial empty state with default values
+		return { filePath: "", figures: [], isProcessed: false };
+	},
+	
+	update(oldState: FigureState, transaction: Transaction): FigureState {
+		// Process any state update effects
+		for (const effect of transaction.effects) {
+			if (effect.is(updateFigureState)) {
+				return effect.value;
+			}
+		}
+		
+		// Default: return previous state if no effects were applied
+		return oldState;
+	},
+	
+	// This field isn't used directly for rendering, only for state tracking
+	provide(field: StateField<FigureState>): Extension {
+		return field;
+	}
+});
+
 // Default settings
 const DEFAULT_SETTINGS: NumberedFiguresSettings = {
 	// Default settings values
@@ -24,6 +74,138 @@ const FIGURE_TEXT = {
 	english: "Figure",
 	hebrew: "איור"
 };
+
+// Create a ViewPlugin to process figures based on state changes
+function createFigureViewPlugin(plugin: NumberedFiguresPlugin) {
+	return ViewPlugin.fromClass(class {
+		constructor(private view: EditorView) {
+			// Initial processing
+			this.processFigures();
+		}
+		
+		update(update: ViewUpdate) {
+			// Get the current figure state
+			const state = update.state.field(figureStateField);
+			
+			// Process figures if state changed or document changed
+			if (update.docChanged || !state.isProcessed) {
+				this.processFigures();
+			}
+		}
+		
+		processFigures() {
+			// Get active file
+			const activeFile = plugin.app.workspace.getActiveFile();
+			if (!activeFile) return;
+			
+			const filePath = activeFile.path;
+			const figureInfos = plugin.figureInfoByFile.get(filePath);
+			
+			if (!figureInfos || figureInfos.length === 0) {
+				if (plugin.settings.debugMode) console.log('No figure info found for', filePath);
+				return;
+			}
+			
+			// Mark that we've started processing
+			this.updateState(filePath, figureInfos, false);
+			
+			if (plugin.settings.debugMode) console.log('Processing figures in:', filePath);
+			
+			// Get the parent element of the editor view
+			const contentEl = this.view.contentDOM.parentElement;
+			if (!contentEl) return;
+			
+			// Find all images in the view
+			const images = contentEl.querySelectorAll('img[src]') as NodeListOf<HTMLImageElement>;
+			if (plugin.settings.debugMode) console.log('Found images:', images.length);
+			
+			// Process each image
+			images.forEach((img: HTMLImageElement) => {
+				// Get the image source
+				const imgSrc = img.getAttribute('src') || '';
+				// Extract filename from path
+				const srcParts = imgSrc.split('/').pop()?.split('?')[0] || '';
+				// Decode URL-encoded characters
+				const escapedSrcParts = decodeURIComponent(srcParts);
+				
+				if (plugin.settings.debugMode) console.log('Processing image:', imgSrc, 'extracted name:', escapedSrcParts);
+				
+				// Find matching figure info
+				const matchingFigureInfo = figureInfos.find(info => 
+					imgSrc.includes(info.imageSrc) || 
+					info.imageSrc.includes(escapedSrcParts)
+				);
+				
+				// Skip if no match found
+				if (!matchingFigureInfo) {
+					if (plugin.settings.debugMode) console.log('No figure info found for image:', imgSrc);
+					return;
+				}
+				
+				this.applyFigureNumber(img, matchingFigureInfo);
+			});
+			
+			// Mark processing as complete
+			this.updateState(filePath, figureInfos, true);
+		}
+		
+		applyFigureNumber(img: HTMLImageElement, figureInfo: FigureInfo) {
+			if (plugin.settings.debugMode) console.log('Applying figure number:', figureInfo.figureNumber);
+			
+			// Get the container elements
+			const imgContainer = img.closest('div') || img.parentElement;
+			if (!imgContainer) {
+				if (plugin.settings.debugMode) console.log('No parent container found for image');
+				return;
+			}
+			
+			// Look for caption (next sibling with blockquote)
+			let captionContainer = imgContainer.nextElementSibling;
+			if (!captionContainer) return;
+			
+			const blockquote = captionContainer.querySelector('blockquote');
+			if (!blockquote) return;
+			
+			const paragraph = blockquote.querySelector('p');
+			if (!paragraph) return;
+			
+			// Get caption text and update it
+			const paragraphText = paragraph.textContent || '';
+			
+			if (plugin.settings.debugMode) console.log('Found caption paragraph:', paragraphText);
+			
+			// Get language-specific figure text
+			const englishFigureText = FIGURE_TEXT.english;
+			const hebrewFigureText = FIGURE_TEXT.hebrew;
+			
+			// Replace existing figure number with new one
+			let newText = figureInfo.figureNumber + ': ' + 
+				paragraphText
+					.replace(new RegExp(`^${englishFigureText}\\s+[\\w\\d.-]+:\\s*`, 'i'), '')
+					.replace(new RegExp(`^${hebrewFigureText}\\s+[\\w\\d.-]+:\\s*`, 'i'), '')
+					.trim();
+			
+			// Update paragraph text
+			paragraph.textContent = newText;
+			
+			if (plugin.settings.debugMode) console.log('Updated caption to:', newText);
+		}
+		
+		updateState(filePath: string, figures: FigureInfo[], isProcessed: boolean) {
+			// Create a state update effect
+			const effect = updateFigureState.of({ 
+				filePath, 
+				figures, 
+				isProcessed 
+			});
+			
+			// Apply the effect to update state
+			this.view.dispatch({
+				effects: [effect]
+			});
+		}
+	});
+}
 
 export default class NumberedFiguresPlugin extends Plugin {
 	settings: NumberedFiguresSettings;
@@ -61,7 +243,13 @@ export default class NumberedFiguresPlugin extends Plugin {
 			})
 		);
 
-		// Register the rendering processor
+		// Register our StateField and ViewPlugin editor extensions
+		this.registerEditorExtension([
+			figureStateField,
+			createFigureViewPlugin(this)
+		]);
+
+		// Register the rendering processor as a fallback
 		this.registerMarkdownPostProcessor((el, ctx) => {
 			this.processFiguresInDocument(el, ctx);
 		});
