@@ -124,7 +124,7 @@ export default class NumberedFiguresPlugin extends Plugin {
 
 		// Register dedicated processor for figure references in reading view
 		this.registerMarkdownPostProcessor((el, ctx) => {
-			this.processFigureReferencesInReadingView(el, ctx);
+			// this.processFigureReferencesInReadingView(el, ctx);
 		});
 
 		// Add settings tab
@@ -244,7 +244,7 @@ export default class NumberedFiguresPlugin extends Plugin {
 	// Process figures in the rendered document
 	processFiguresInDocument(el: HTMLElement, ctx: MarkdownPostProcessorContext) {
 
-		const readingView = document.body.querySelector('div.markdown-reading-view');
+		const readingView = document.body.querySelector('div.markdown-reading-view') as HTMLElement;
 		if (!readingView) {
 			if (this.settings.debugMode) console.log('No reading view found, skipping figure processing');
 			return;
@@ -288,62 +288,73 @@ export default class NumberedFiguresPlugin extends Plugin {
 			
 			if (this.settings.debugMode) console.log('Found matching figure:', matchingFigureInfo.figureNumber);
 
-			// Now look for the next sibling which should be the caption container. We can't use 'nextElementSibling'
-			// directly because we might not have that info. We need to go back to 'document', find the 'imgContainer',
-			// and use 'nextElementSibling' on that.
-
-			const imgContainerInDocument = readingView.querySelector(`div[src="${imgSrc}"]`) as HTMLElement;
-
-			if (!imgContainerInDocument) {
-				if (this.settings.debugMode) console.log('No image container found in document for:', imgSrc);
-				return;	
-			}
-
-			let captionContainer = imgContainerInDocument.nextElementSibling;
-			
-			
-			// If we found a potential caption container, check if it contains a blockquote
-			if (!captionContainer) {
-				if (this.settings.debugMode) console.log('No caption container found after image container', imgContainerInDocument);
-				return;
-			}
-
-			const blockquote = captionContainer.querySelector('blockquote') as HTMLElement;
-			if (!blockquote) {
-				if (this.settings.debugMode) console.log('No blockquote found in caption container:', captionContainer);
-				return;
-			}
-
-			const paragraph = blockquote.querySelector('p');
-			if (!paragraph) {
-				if (this.settings.debugMode) console.log('No paragraph found in blockquote');
-				return;
-			}
-
-			// This is a caption paragraph, update it with the figure number
-			const paragraphText = paragraph.textContent || '';
-
-			// Log the paragraph text for debugging
-			if (this.settings.debugMode) console.log('Found caption paragraph:', paragraphText);
-
-			// Get language-specific figure text
-			const englishFigureText = FIGURE_TEXT.english;
-			const hebrewFigureText = FIGURE_TEXT.hebrew;
-
-			// Format the new text with the figure number at the start
-			// Replace any existing figure label (in either language) with the new one
-			// Updated to handle both hyphen and dot formats
-			let newText = matchingFigureInfo.figureNumber + ': ' + 
-				paragraphText
-					.replace(new RegExp(`^${englishFigureText}\\s+[\\w\\d.-]+:\\s*`, 'i'), '')
-					.replace(new RegExp(`^${hebrewFigureText}\\s+[\\w\\d.-]+:\\s*`, 'i'), '')
-					.trim();
-
-			// Update the paragraph text
-			paragraph.textContent = newText;
-
-			if (this.settings.debugMode) console.log('Updated caption to:', newText);
+			 // Schedule the caption processing with a delay to ensure DOM elements are loaded
+			this.scheduleCaptionProcessing(readingView, imgSrc, matchingFigureInfo);
 		});
+	}
+
+	// Helper function to schedule caption processing with a delay
+	private scheduleCaptionProcessing(readingView: HTMLElement, imgSrc: string, matchingFigureInfo: FigureInfo) {
+		// Use setTimeout to delay the processing
+		setTimeout(() => {
+			if (this.settings.debugMode) console.log('Delayed caption processing for:', imgSrc);
+			this.processCaptionForImage(readingView, imgSrc, matchingFigureInfo);
+		}, 2000); // 2 second delay
+	}
+
+	// Process caption for a specific image
+	private processCaptionForImage(readingView: HTMLElement, imgSrc: string, matchingFigureInfo: FigureInfo) {
+		// Now look for the next sibling which should be the caption container
+		const imgContainerInDocument = readingView.querySelector(`div[src="${imgSrc}"]`) as HTMLElement;
+
+		if (!imgContainerInDocument) {
+			if (this.settings.debugMode) console.log('No image container found in document for:', imgSrc);
+			return;	
+		}
+
+		let captionContainer = imgContainerInDocument.nextElementSibling;
+		
+		// If we found a potential caption container, check if it contains a blockquote
+		if (!captionContainer) {
+			if (this.settings.debugMode) console.log('No caption container found after image container', imgContainerInDocument);
+			return;
+		}
+
+		const blockquote = captionContainer.querySelector('blockquote') as HTMLElement;
+		if (!blockquote) {
+			if (this.settings.debugMode) console.log('No blockquote found in caption container:', captionContainer);
+			return;
+		}
+
+		const paragraph = blockquote.querySelector('p');
+		if (!paragraph) {
+			if (this.settings.debugMode) console.log('No paragraph found in blockquote');
+			return;
+		}
+
+		// This is a caption paragraph, update it with the figure number
+		const paragraphText = paragraph.textContent || '';
+
+		// Log the paragraph text for debugging
+		if (this.settings.debugMode) console.log('Found caption paragraph:', paragraphText);
+
+		// Get language-specific figure text
+		const englishFigureText = FIGURE_TEXT.english;
+		const hebrewFigureText = FIGURE_TEXT.hebrew;
+
+		// Format the new text with the figure number at the start
+		// Replace any existing figure label (in either language) with the new one
+		// Updated to handle both hyphen and dot formats
+		let newText = matchingFigureInfo.figureNumber + ': ' + 
+			paragraphText
+				.replace(new RegExp(`^${englishFigureText}\\s+[\\w\\d.-]+:\\s*`, 'i'), '')
+				.replace(new RegExp(`^${hebrewFigureText}\\s+[\\w\\d.-]+:\\s*`, 'i'), '')
+				.trim();
+
+		// Update the paragraph text
+		paragraph.textContent = newText;
+
+		if (this.settings.debugMode) console.log('Updated caption to:', newText);
 	}
 
 	// Process figure references in links
