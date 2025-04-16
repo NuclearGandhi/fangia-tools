@@ -243,7 +243,6 @@ export default class NumberedFiguresPlugin extends Plugin {
 
 	// Process figures in the rendered document
 	processFiguresInDocument(el: HTMLElement, ctx: MarkdownPostProcessorContext) {
-		if (this.settings.debugMode) console.log('Processing figures in document:', ctx.sourcePath);
 
 		const readingView = document.body.querySelector('div.markdown-reading-view');
 		if (!readingView) {
@@ -261,13 +260,14 @@ export default class NumberedFiguresPlugin extends Plugin {
 
 		if (this.settings.debugMode) console.log('Figure info found:', figureInfos);
 
-		let images = readingView.querySelectorAll('img[src]') as NodeListOf<HTMLImageElement>;
+		let images = el.querySelectorAll('span[src]') as NodeListOf<HTMLElement>;
 		if (this.settings.debugMode) console.log('Found images:', images.length);
 
 		// Process each image using source as identifier
-		images.forEach((img: HTMLImageElement) => {
+		images.forEach((img: HTMLElement) => {
 			// Get the image source
 			const imgSrc = img.getAttribute('src') || '';
+			el.setAttribute('src', imgSrc); // Set the src attribute to the span element
 			// Extract just the filename from the path (without query parameters)
 			const srcParts = imgSrc.split('/').pop()?.split('?')[0] || '';
 			// Decode the filename to handle any URL-encoded characters
@@ -288,26 +288,29 @@ export default class NumberedFiguresPlugin extends Plugin {
 			
 			if (this.settings.debugMode) console.log('Found matching figure:', matchingFigureInfo.figureNumber);
 
-			// Get the parent div containing the image
-			const imgContainer = img.closest('div.el-p');
-			if (!imgContainer) {
-				if (this.settings.debugMode) console.log('No parent container found for image:', img.outerHTML);
-				return;
+			// Now look for the next sibling which should be the caption container. We can't use 'nextElementSibling'
+			// directly because we might not have that info. We need to go back to 'document', find the 'imgContainer',
+			// and use 'nextElementSibling' on that.
+
+			const imgContainerInDocument = readingView.querySelector(`div[src="${imgSrc}"]`) as HTMLElement;
+
+			if (!imgContainerInDocument) {
+				if (this.settings.debugMode) console.log('No image container found in document for:', imgSrc);
+				return;	
 			}
 
-			// Now look for the next sibling which should be the caption container
-			let captionContainer = imgContainer.nextElementSibling;
-
+			let captionContainer = imgContainerInDocument.nextElementSibling;
+			
+			
 			// If we found a potential caption container, check if it contains a blockquote
 			if (!captionContainer) {
-				if (this.settings.debugMode) console.log('No caption container found for image');
+				if (this.settings.debugMode) console.log('No caption container found after image container', imgContainerInDocument);
 				return;
 			}
 
-			const blockquote = captionContainer.querySelector('blockquote');
+			const blockquote = captionContainer.querySelector('blockquote') as HTMLElement;
 			if (!blockquote) {
-				if (this.settings.debugMode) console.log('No blockquote found in caption container:', captionContainer.outerHTML);
-				if (this.settings.debugMode) console.log('img container:', imgContainer.outerHTML);
+				if (this.settings.debugMode) console.log('No blockquote found in caption container:', captionContainer);
 				return;
 			}
 
