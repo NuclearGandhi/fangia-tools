@@ -91,17 +91,6 @@ export default class NumberedFiguresPlugin extends Plugin {
 		console.log('Loading numbered-figures plugin');
 		await this.loadSettings();
 
-		// Register a handler to process the document before rendering
-		this.registerMarkdownCodeBlockProcessor("figure-id", (source, el, ctx) => {
-			// This is a hidden code block just to trigger processing
-			el.style.display = "none";
-
-			if (this.settings.debugMode) console.log('figure-id code block processor triggered for', ctx.sourcePath);
-
-			// Process the document on next tick to ensure all elements are loaded
-			setTimeout(() => this.processFiguresInDocument(el, ctx), 0);
-		});
-
 		// Register the event to listen for file open
 		this.registerEvent(
 			this.app.workspace.on('file-open', (file) => {
@@ -117,15 +106,6 @@ export default class NumberedFiguresPlugin extends Plugin {
 			})
 		);
 
-		// Register the rendering processor for figure numbering in reading view
-		this.registerMarkdownPostProcessor((el, ctx) => {
-			this.processFiguresInDocument(el, ctx);
-		});
-
-		// Register dedicated processor for figure references in reading view
-		this.registerMarkdownPostProcessor((el, ctx) => {
-			// this.processFigureReferencesInReadingView(el, ctx);
-		});
 
 		// Add settings tab
 		this.addSettingTab(new NumberedFiguresSettingTab(this.app, this));
@@ -239,12 +219,24 @@ export default class NumberedFiguresPlugin extends Plugin {
 		// Store the figure info for this file
 		this.figureInfoByFile.set(file.path, figuresForFile);
 		this.figureCounters.set(file.path, counter);
+
+		
+		// Register the rendering processor for figure numbering in reading view
+		this.registerMarkdownPostProcessor((el, ctx) => {
+			this.processFiguresInDocument(el, ctx);
+		});
+
+		// Register dedicated processor for f	igure references in reading view
+		this.registerMarkdownPostProcessor((el, ctx) => {
+			this.processFigureReferencesInReadingView(el, ctx);
+		});
 	}
 
 	// Process figures in the rendered document
 	processFiguresInDocument(el: HTMLElement, ctx: MarkdownPostProcessorContext) {
 
-		const readingView = document.body.querySelector('div.markdown-reading-view') as HTMLElement;
+		const activeView = document.body.querySelector('.mod-active.workspace-leaf') as HTMLElement;
+		const readingView = activeView.querySelector('.markdown-reading-view') as HTMLElement;
 		if (!readingView) {
 			if (this.settings.debugMode) console.log('No reading view found, skipping figure processing');
 			return;
@@ -299,7 +291,7 @@ export default class NumberedFiguresPlugin extends Plugin {
 		setTimeout(() => {
 			if (this.settings.debugMode) console.log('Delayed caption processing for:', imgSrc);
 			this.processCaptionForImage(readingView, imgSrc, matchingFigureInfo);
-		}, 2000); // 2 second delay
+		}); // 2 second delay
 	}
 
 	// Process caption for a specific image
