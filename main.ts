@@ -33,6 +33,14 @@ export default class FangiaToolsPlugin extends Plugin {
 	settings: FangiaToolsSettings;
 	// Store figure information per file
 	figuresByFile: Map<string, FigureInfo[]> = new Map();
+	// Track which figures have been assigned per file
+	assignedFigures: Map<string, Set<string>> = new Map();
+	// Track processed elements to prevent duplicates
+	private processedElements: WeakSet<HTMLElement> = new WeakSet();
+	// Track current view mode to detect changes
+	private lastViewMode: string | null = null;
+	// Processing lock to prevent race conditions
+	private processingLock: Map<string, boolean> = new Map();
 
 	async onload() {
 		console.log('Loading Fangia Tools plugin');
@@ -47,7 +55,23 @@ export default class FangiaToolsPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on('file-open', (file) => {
 				if (file && this.settings.enableFigureNumbering) {
+					this.clearCacheForFile(file.path);
 					this.scanForFigures(file);
+				}
+			})
+		);
+
+		// Listen for layout changes but with much less aggressive cache clearing
+		this.registerEvent(
+			this.app.workspace.on('layout-change', () => {
+				// Only trigger a delayed re-scan if we're in reading view and have no figures cached
+				if (this.isReadingView() && this.settings.enableFigureNumbering) {
+					const activeFile = this.app.workspace.getActiveFile();
+					if (activeFile && !this.figuresByFile.has(activeFile.path)) {
+						setTimeout(() => {
+							this.scanForFigures(activeFile);
+						}, 500);
+					}
 				}
 			})
 		);
@@ -79,10 +103,29 @@ export default class FangiaToolsPlugin extends Plugin {
 			return;
 		}
 
+		// Prevent duplicate processing of the same element
+		if (this.processedElements.has(el)) {
+			if (this.settings.debugMode) {
+				console.log(`Element already processed, skipping: ${el.tagName}.${el.className}`);
+			}
+			return;
+		}
+
+		// Check for processing lock to prevent race conditions
+		if (this.processingLock.get(ctx.sourcePath)) {
+			if (this.settings.debugMode) {
+				console.log(`Processing locked for file: ${ctx.sourcePath}`);
+			}
+			return;
+		}
+
 		// Route to different features based on settings
 		if (this.settings.enableFigureNumbering) {
 			await this.processFigureNumbering(el, ctx);
 		}
+
+		// Mark element as processed
+		this.processedElements.add(el);
 
 		// Future features can be added here:
 		// if (this.settings.enableFeatureX) {
@@ -94,28 +137,36 @@ export default class FangiaToolsPlugin extends Plugin {
 
 	// Process figure numbering feature
 	async processFigureNumbering(el: HTMLElement, ctx: MarkdownPostProcessorContext) {
-		let figures = this.figuresByFile.get(ctx.sourcePath);
-		if (!figures || figures.length === 0) {
-			// If figures haven't been scanned yet, scan them now
-			const file = this.app.vault.getFileByPath(ctx.sourcePath);
-			if (file) {
-				await this.scanForFigures(file);
-				figures = this.figuresByFile.get(ctx.sourcePath);
-			}
+		// Set processing lock
+		this.processingLock.set(ctx.sourcePath, true);
+
+		try {
+			let figures = this.figuresByFile.get(ctx.sourcePath);
 			if (!figures || figures.length === 0) {
-				return;
+				// If figures haven't been scanned yet, scan them now
+				const file = this.app.vault.getFileByPath(ctx.sourcePath);
+				if (file) {
+					await this.scanForFigures(file);
+					figures = this.figuresByFile.get(ctx.sourcePath);
+				}
+				if (!figures || figures.length === 0) {
+					return;
+				}
 			}
-		}
 
-		if (this.settings.debugMode) {
-			console.log(`Processing block for figure numbering: ${el.tagName}.${el.className}`);
-		}
+			if (this.settings.debugMode) {
+				console.log(`Processing block for figure numbering: ${el.tagName}.${el.className}`);
+			}
 
-		// Process figure captions by matching the block content to figure patterns
-		this.processBlockForFigures(el, figures, ctx);
-		
-		// Process figure references in links
-		this.processFigureReferences(el, figures);
+			// Process figure captions by matching the block content to figure patterns
+			this.processBlockForFigures(el, figures, ctx);
+			
+			// Process figure references in links
+			this.processFigureReferences(el, figures);
+		} finally {
+			// Always release the processing lock
+			this.processingLock.delete(ctx.sourcePath);
+		}
 	}
 
 	// Extract file prefix for figure numbering (e.g., "SLD1_002" -> "2", "IRB1_HW003" -> "HW3")
@@ -173,7 +224,7 @@ export default class FangiaToolsPlugin extends Plugin {
 		this.figuresByFile.set(file.path, figures);
 	}
 
-	// Process a specific block for figure captions using stateless assignment
+	// Process a specific block for figure captions using document-order based matching
 	processBlockForFigures(el: HTMLElement, figures: FigureInfo[], ctx: MarkdownPostProcessorContext) {
 		// Look for blockquote elements (these contain captions)
 		const blockquotes = el.querySelectorAll('blockquote');
@@ -185,7 +236,14 @@ export default class FangiaToolsPlugin extends Plugin {
 			console.log(`Found ${blockquotes.length} blockquotes in block`);
 		}
 
-		// Process each blockquote
+		// Get or initialize the assignment tracking for this file
+		let assignedFiguresSet = this.assignedFigures.get(ctx.sourcePath);
+		if (!assignedFiguresSet) {
+			assignedFiguresSet = new Set<string>();
+			this.assignedFigures.set(ctx.sourcePath, assignedFiguresSet);
+		}
+
+		// Process each blockquote - assign figures in document order
 		blockquotes.forEach((blockquote) => {
 			const paragraph = blockquote.querySelector('p');
 			if (!paragraph) {
@@ -203,15 +261,17 @@ export default class FangiaToolsPlugin extends Plugin {
 				return;
 			}
 			
-			// Find which figure should be assigned to this blockquote
-			// We do this by checking what figure numbers are already assigned in the document
-			const nextFigure = this.findNextUnassignedFigure(figures, ctx);
+			// Find the next available figure in document order
+			const nextFigure = this.getNextAvailableFigure(figures, assignedFiguresSet);
 			if (!nextFigure) {
 				if (this.settings.debugMode) {
-					console.log(`No more figures available to assign`);
+					console.log(`No more figures available for caption: "${originalText.substring(0, 30)}..."`);
 				}
 				return;
 			}
+			
+			// Mark this figure as assigned
+			assignedFiguresSet.add(nextFigure.id);
 			
 			// Remove any existing figure labels (just in case)
 			const cleanText = originalText
@@ -226,50 +286,22 @@ export default class FangiaToolsPlugin extends Plugin {
 			paragraph.innerHTML = `${nextFigure.number}: ${cleanHTML}`;
 
 			if (this.settings.debugMode) {
-				console.log(`Updated caption with ${nextFigure.number}: "${cleanText}" -> "${nextFigure.number}: ${cleanText}"`);
+				console.log(`Assigned ${nextFigure.number} to caption: "${cleanText}" (Figure ID: ${nextFigure.id})`);
 			}
 		});
 	}
 
-	// Find the next figure that hasn't been assigned yet
-	findNextUnassignedFigure(figures: FigureInfo[], ctx: MarkdownPostProcessorContext): FigureInfo | null {
-		// Get the document content to check what figures are already assigned
-		const activeLeaf = this.app.workspace.activeLeaf;
-		if (!activeLeaf) return figures[0] || null;
-
-		const view = activeLeaf.view as any;
-		const contentEl = view.contentEl || view.containerEl;
-		if (!contentEl) return figures[0] || null;
-
-		// Find all existing figure numbers in the document
-		const allBlockquotes = contentEl.querySelectorAll('blockquote p');
-		const assignedNumbers = new Set<string>();
-		
-		allBlockquotes.forEach((p: Element) => {
-			const text = p.textContent || '';
-			const match = text.match(/^(Figure|איור)\s+([\w\d.-]+):/);
-			if (match) {
-				assignedNumbers.add(match[2]); // The figure number part (e.g., "2.1", "HW3.2")
-			}
-		});
-
-		if (this.settings.debugMode) {
-			console.log(`Already assigned figure numbers: [${Array.from(assignedNumbers).join(', ')}]`);
-		}
-
-		// Find the first figure that hasn't been assigned
+	// Get the next available figure in document order
+	getNextAvailableFigure(figures: FigureInfo[], assignedSet: Set<string>): FigureInfo | null {
 		for (const figure of figures) {
-			const figureNumber = figure.number.replace(/^(Figure|איור)\s+/, ''); // Extract just the number part
-			if (!assignedNumbers.has(figureNumber)) {
-				if (this.settings.debugMode) {
-					console.log(`Next unassigned figure: ${figure.number}`);
-				}
+			if (!assignedSet.has(figure.id)) {
 				return figure;
 			}
 		}
-
-		return null; // All figures have been assigned
+		return null;
 	}
+
+
 
 	// Process figure references in links
 	processFigureReferences(el: HTMLElement, figures: FigureInfo[]) {
@@ -307,6 +339,39 @@ export default class FangiaToolsPlugin extends Plugin {
 		const markdownView = activeLeaf.view as any;
 		return markdownView.getMode && markdownView.getMode() === 'preview';
 	}
+
+	// Get current view mode
+	getCurrentViewMode(): string | null {
+		const activeLeaf = this.app.workspace.activeLeaf;
+		if (!activeLeaf || activeLeaf.view.getViewType() !== 'markdown') {
+			return null;
+		}
+		const markdownView = activeLeaf.view as any;
+		return markdownView.getMode && markdownView.getMode();
+	}
+
+	// Clear cache for a specific file
+	clearCacheForFile(filePath: string) {
+		this.figuresByFile.delete(filePath);
+		this.assignedFigures.delete(filePath);
+		this.processingLock.delete(filePath);
+		// Also clear processed elements to allow re-processing
+		this.processedElements = new WeakSet();
+		if (this.settings.debugMode) {
+			console.log(`Cleared complete cache for file: ${filePath}`);
+		}
+	}
+
+	// Complete reset of all caches and processed elements
+	resetAllCaches() {
+		this.figuresByFile.clear();
+		this.assignedFigures.clear();
+		this.processedElements = new WeakSet();
+		this.processingLock.clear();
+		if (this.settings.debugMode) {
+			console.log(`Reset all caches and processed elements`);
+		}
+	}
 }
 
 class FangiaToolsSettingTab extends PluginSettingTab {
@@ -335,13 +400,16 @@ class FangiaToolsSettingTab extends PluginSettingTab {
 					this.plugin.settings.enableFigureNumbering = value;
 					await this.plugin.saveSettings();
 					
-					// Clear figure cache when toggling to force re-scan
+					// Complete reset when toggling to ensure clean state
+					this.plugin.resetAllCaches();
+					
+					// Re-scan current file if enabling and in reading view
 					if (value) {
-						this.plugin.figuresByFile.clear();
-						// Re-scan current file if in reading view
 						const activeFile = this.app.workspace.getActiveFile();
 						if (activeFile && this.plugin.isReadingView()) {
-							this.plugin.scanForFigures(activeFile);
+							setTimeout(() => {
+								this.plugin.scanForFigures(activeFile);
+							}, 100);
 						}
 					}
 				}));
@@ -367,4 +435,5 @@ class FangiaToolsSettingTab extends PluginSettingTab {
 		});
 	}
 }
+
 
