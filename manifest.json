@@ -1,9 +1,9 @@
 {
-	"id": "numbered-figures",
-	"name": "Numbered Figures",
+	"id": "fangia-tools",
+	"name": "Fangia Tools",
 	"version": "0.0.1",
 	"minAppVersion": "0.15.0",
-	"description": "Numberes figures in your notes.",
+	"description": "A collection of useful tools for Obsidian notes.",
 	"author": "Ido Fang Bentov",
 	"isDesktopOnly": false
 }

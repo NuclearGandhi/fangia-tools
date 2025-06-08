@@ -1,9 +1,13 @@
-# Obsidian Sample Plugin
+# Fangia Tools
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+A collection of useful tools for Obsidian (https://obsidian.md).
 
 This project uses TypeScript to provide type checking and documentation.
 The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+
+This plugin provides various tools to enhance your Obsidian experience, including:
+- Figure numbering functionality
+- Additional utility features
 
 This sample plugin demonstrates some of the basic functionality the plugin API can do.
 - Adds a ribbon icon, which shows a Notice when clicked.
