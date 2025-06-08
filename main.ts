@@ -7,7 +7,9 @@ import {
 	TFile
 } from 'obsidian';
 
-interface NumberedFiguresSettings {
+interface FangiaToolsSettings {
+	// Figure numbering feature
+	enableFigureNumbering: boolean;
 	debugMode: boolean;
 }
 
@@ -17,7 +19,8 @@ interface FigureInfo {
 	imagePath: string;
 }
 
-const DEFAULT_SETTINGS: NumberedFiguresSettings = {
+const DEFAULT_SETTINGS: FangiaToolsSettings = {
+	enableFigureNumbering: true,
 	debugMode: false
 };
 
@@ -26,16 +29,16 @@ const FIGURE_TEXT = {
 	hebrew: "איור"
 };
 
-export default class NumberedFiguresPlugin extends Plugin {
-	settings: NumberedFiguresSettings;
+export default class FangiaToolsPlugin extends Plugin {
+	settings: FangiaToolsSettings;
 	// Store figure information per file
 	figuresByFile: Map<string, FigureInfo[]> = new Map();
 
 	async onload() {
-		console.log('Loading numbered-figures plugin');
+		console.log('Loading Fangia Tools plugin');
 		await this.loadSettings();
 
-		// Single post-processor that handles everything
+		// Main post-processor that routes to different features
 		this.registerMarkdownPostProcessor((el, ctx) => {
 			this.processDocument(el, ctx);
 		});
@@ -43,14 +46,14 @@ export default class NumberedFiguresPlugin extends Plugin {
 		// Listen for file changes to refresh figure numbering
 		this.registerEvent(
 			this.app.workspace.on('file-open', (file) => {
-				if (file) {
+				if (file && this.settings.enableFigureNumbering) {
 					this.scanForFigures(file);
 				}
 			})
 		);
 
-		this.addSettingTab(new NumberedFiguresSettingTab(this.app, this));
-		console.log('Numbered-figures plugin loaded');
+		this.addSettingTab(new FangiaToolsSettingTab(this.app, this));
+		console.log('Fangia Tools plugin loaded');
 	}
 
 	async loadSettings() {
@@ -59,6 +62,60 @@ export default class NumberedFiguresPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	// Main processing function - routes to different reading view features
+	async processDocument(el: HTMLElement, ctx: MarkdownPostProcessorContext) {
+		// Only process in reading view
+		if (!this.isReadingView()) {
+			return;
+		}
+
+		// Skip irrelevant blocks (frontmatter, code blocks, etc.)
+		if (el.classList.contains('mod-frontmatter') || 
+			el.classList.contains('mod-header') ||
+			el.tagName === 'PRE' ||
+			el.classList.contains('frontmatter')) {
+			return;
+		}
+
+		// Route to different features based on settings
+		if (this.settings.enableFigureNumbering) {
+			await this.processFigureNumbering(el, ctx);
+		}
+
+		// Future features can be added here:
+		// if (this.settings.enableFeatureX) {
+		//     await this.processFeatureX(el, ctx);
+		// }
+	}
+
+	// ===== FIGURE NUMBERING FEATURE =====
+
+	// Process figure numbering feature
+	async processFigureNumbering(el: HTMLElement, ctx: MarkdownPostProcessorContext) {
+		let figures = this.figuresByFile.get(ctx.sourcePath);
+		if (!figures || figures.length === 0) {
+			// If figures haven't been scanned yet, scan them now
+			const file = this.app.vault.getFileByPath(ctx.sourcePath);
+			if (file) {
+				await this.scanForFigures(file);
+				figures = this.figuresByFile.get(ctx.sourcePath);
+			}
+			if (!figures || figures.length === 0) {
+				return;
+			}
+		}
+
+		if (this.settings.debugMode) {
+			console.log(`Processing block for figure numbering: ${el.tagName}.${el.className}`);
+		}
+
+		// Process figure captions by matching the block content to figure patterns
+		this.processBlockForFigures(el, figures, ctx);
+		
+		// Process figure references in links
+		this.processFigureReferences(el, figures);
 	}
 
 	// Extract file prefix for figure numbering (e.g., "SLD1_002" -> "2", "IRB1_HW003" -> "HW3")
@@ -114,45 +171,6 @@ export default class NumberedFiguresPlugin extends Plugin {
 		}
 
 		this.figuresByFile.set(file.path, figures);
-	}
-
-	// Main processing function
-	async processDocument(el: HTMLElement, ctx: MarkdownPostProcessorContext) {
-		// Only process in reading view
-		if (!this.isReadingView()) {
-			return;
-		}
-
-		// Skip irrelevant blocks (frontmatter, code blocks, etc.)
-		if (el.classList.contains('mod-frontmatter') || 
-			el.classList.contains('mod-header') ||
-			el.tagName === 'PRE' ||
-			el.classList.contains('frontmatter')) {
-			return;
-		}
-
-		let figures = this.figuresByFile.get(ctx.sourcePath);
-		if (!figures || figures.length === 0) {
-			// If figures haven't been scanned yet, scan them now
-			const file = this.app.vault.getFileByPath(ctx.sourcePath);
-			if (file) {
-				await this.scanForFigures(file);
-				figures = this.figuresByFile.get(ctx.sourcePath);
-			}
-			if (!figures || figures.length === 0) {
-				return;
-			}
-		}
-
-		if (this.settings.debugMode) {
-			console.log(`Processing block: ${el.tagName}.${el.className}`);
-		}
-
-		// Process figure captions by matching the block content to figure patterns
-		this.processBlockForFigures(el, figures, ctx);
-		
-		// Process figure references in links
-		this.processFigureReferences(el, figures);
 	}
 
 	// Process a specific block for figure captions using stateless assignment
@@ -253,20 +271,6 @@ export default class NumberedFiguresPlugin extends Plugin {
 		return null; // All figures have been assigned
 	}
 
-	// Check if we're in reading view
-	isReadingView(): boolean {
-		const activeLeaf = this.app.workspace.activeLeaf;
-		if (!activeLeaf || activeLeaf.view.getViewType() !== 'markdown') {
-			return false;
-		}
-		
-		// Check if the view has a reading mode (preview mode)
-		const markdownView = activeLeaf.view as any;
-		return markdownView.getMode && markdownView.getMode() === 'preview';
-	}
-
-
-
 	// Process figure references in links
 	processFigureReferences(el: HTMLElement, figures: FigureInfo[]) {
 		const links = el.querySelectorAll('a[href*="#^figure"]');
@@ -289,12 +293,26 @@ export default class NumberedFiguresPlugin extends Plugin {
 			}
 		});
 	}
+
+	// ===== SHARED UTILITIES =====
+
+	// Check if we're in reading view
+	isReadingView(): boolean {
+		const activeLeaf = this.app.workspace.activeLeaf;
+		if (!activeLeaf || activeLeaf.view.getViewType() !== 'markdown') {
+			return false;
+		}
+		
+		// Check if the view has a reading mode (preview mode)
+		const markdownView = activeLeaf.view as any;
+		return markdownView.getMode && markdownView.getMode() === 'preview';
+	}
 }
 
-class NumberedFiguresSettingTab extends PluginSettingTab {
-	plugin: NumberedFiguresPlugin;
+class FangiaToolsSettingTab extends PluginSettingTab {
+	plugin: FangiaToolsPlugin;
 
-	constructor(app: App, plugin: NumberedFiguresPlugin) {
+	constructor(app: App, plugin: FangiaToolsPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
@@ -303,7 +321,33 @@ class NumberedFiguresSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 
 		containerEl.empty();
-		containerEl.createEl('h2', { text: 'Numbered Figures Settings' });
+		containerEl.createEl('h2', { text: 'Fangia Tools Settings' });
+
+		// Figure numbering section
+		containerEl.createEl('h3', { text: 'Figure Numbering' });
+
+		new Setting(containerEl)
+			.setName('Enable Figure Numbering')
+			.setDesc('Automatically number figures in reading view (format: ![[image.png]]^figureID)')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.enableFigureNumbering)
+				.onChange(async (value) => {
+					this.plugin.settings.enableFigureNumbering = value;
+					await this.plugin.saveSettings();
+					
+					// Clear figure cache when toggling to force re-scan
+					if (value) {
+						this.plugin.figuresByFile.clear();
+						// Re-scan current file if in reading view
+						const activeFile = this.app.workspace.getActiveFile();
+						if (activeFile && this.plugin.isReadingView()) {
+							this.plugin.scanForFigures(activeFile);
+						}
+					}
+				}));
+
+		// Debug section
+		containerEl.createEl('h3', { text: 'Debug' });
 
 		new Setting(containerEl)
 			.setName('Debug Mode')
@@ -315,9 +359,12 @@ class NumberedFiguresSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		new Setting(containerEl)
-			.setName('About')
-			.setDesc('Automatically numbers figures in reading view. Use format: ![[image.png]]^figureID');
+		// Future features section placeholder
+		containerEl.createEl('h3', { text: 'Future Features' });
+		containerEl.createEl('p', { 
+			text: 'Additional reading view enhancements will be added here.',
+			cls: 'setting-item-description'
+		});
 	}
 }
 
