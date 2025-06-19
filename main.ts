@@ -7,16 +7,20 @@ import {
 } from 'obsidian';
 import { BaseFeature } from './features/base-feature';
 import { FigureNumberingFeature } from './features/figure-numbering';
+import { EquationReferencesFeature } from './features/equation-references';
 import { ViewUtils } from './utils/view-utils';
 
 interface FangiaToolsSettings {
 	// Figure numbering feature
 	enableFigureNumbering: boolean;
+	// Equation references feature
+	enableEquationReferences: boolean;
 	debugMode: boolean;
 }
 
 const DEFAULT_SETTINGS: FangiaToolsSettings = {
 	enableFigureNumbering: true,
+	enableEquationReferences: true,
 	debugMode: false
 };
 
@@ -72,7 +76,8 @@ export default class FangiaToolsPlugin extends Plugin {
 	// Initialize all features
 	initializeFeatures() {
 		this.features = [
-			new FigureNumberingFeature(this.app, this.settings.debugMode)
+			new FigureNumberingFeature(this.app, this.settings.debugMode),
+			new EquationReferencesFeature(this.app, this.settings.debugMode)
 		];
 	}
 
@@ -182,6 +187,22 @@ class FangiaToolsSettingTab extends PluginSettingTab {
 							}
 						}
 					}
+				}));
+
+		// Equation references section
+		containerEl.createEl('h3', { text: 'Equation References' });
+
+		new Setting(containerEl)
+			.setName('Enable Equation References')
+			.setDesc('Convert equation references like $\\text{(4.13)}$ into clickable links to equations with \\tag{4.13}')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.enableEquationReferences)
+				.onChange(async (value) => {
+					this.plugin.settings.enableEquationReferences = value;
+					await this.plugin.saveSettings();
+					
+					// Complete reset when toggling to ensure clean state
+					this.plugin.resetAllCaches();
 				}));
 
 		// Debug section
