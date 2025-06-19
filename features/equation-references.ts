@@ -88,7 +88,7 @@ export class EquationReferencesFeature extends BaseFeature {
 					const equationNumber = tagMatch[1];
 					const anchorId = `eq-${equationNumber}`;
 					
-					// Add the anchor ID to the equation container
+					// Add HTML anchor ID (this actually works!)
 					if (!equation.id) {
 						equation.id = anchorId;
 						this.log(`Anchor: eq-${equationNumber}`);
@@ -144,11 +144,26 @@ export class EquationReferencesFeature extends BaseFeature {
 				return;
 			}
 
-			// Create a link element for HTML anchor navigation
+			// Create a link element with custom styling
 			const link = document.createElement('a');
 			link.href = `#eq-${equationNumber}`;
 			link.className = 'equation-reference';
 			link.setAttribute('data-equation-number', equationNumber);
+			
+			// Add smooth scrolling behavior
+			link.addEventListener('click', (e) => {
+				e.preventDefault();
+				const target = document.getElementById(`eq-${equationNumber}`);
+				if (target) {
+					target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+					// Add a brief highlight effect
+					target.style.transition = 'background-color 0.3s ease';
+					target.style.backgroundColor = 'var(--background-modifier-hover)';
+					setTimeout(() => {
+						target.style.backgroundColor = '';
+					}, 1000);
+				}
+			});
 
 			// Clone the container and wrap it
 			const clone = container.cloneNode(true) as HTMLElement;
