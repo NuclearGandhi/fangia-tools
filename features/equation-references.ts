@@ -118,6 +118,9 @@ export class EquationReferencesFeature extends BaseFeature {
 			// Check if this equation has a label/tag
 			const labels = equation.querySelectorAll('mjx-labels mjx-mtext');
 			
+			// Process all labels and create anchors for each equation number
+			const equationNumbers: string[] = [];
+			
 			labels.forEach(label => {
 				const tagText = this.extractMathJaxText(label as HTMLElement);
 				
@@ -131,17 +134,43 @@ export class EquationReferencesFeature extends BaseFeature {
 					const tagMatch = tagText.match(tagPattern);
 					if (tagMatch) {
 						const equationNumber = tagMatch[1];
-						const anchorId = `eq-${equationNumber}`;
-						
-						// Add HTML anchor ID (this actually works!)
-						if (!equation.id) {
-							equation.id = anchorId;
-							this.log(`Anchor: eq-${equationNumber}`);
-						}
-						break; // Stop after first match
+						equationNumbers.push(equationNumber);
+						break; // Stop after first match for this label
 					}
 				}
 			});
+			
+			// If we found equation numbers, set up anchors
+			if (equationNumbers.length > 0) {
+				// Use the first equation number as the primary ID
+				if (!equation.id) {
+					equation.id = `eq-${equationNumbers[0]}`;
+					this.log(`Primary anchor: eq-${equationNumbers[0]}`);
+				}
+				
+				// For multiple equations, add data attributes for all equation numbers
+				if (equationNumbers.length > 1) {
+					equation.setAttribute('data-equation-numbers', equationNumbers.join(','));
+					this.log(`Multiple equations in block: ${equationNumbers.join(', ')}`);
+					
+					// Create additional invisible spans for other equation numbers that point to the same block
+					equationNumbers.slice(1).forEach(eqNum => {
+						const existingAnchor = document.getElementById(`eq-${eqNum}`);
+						if (!existingAnchor) {
+							const anchor = document.createElement('span');
+							anchor.id = `eq-${eqNum}`;
+							anchor.style.cssText = 'position: absolute; visibility: hidden; pointer-events: none;';
+							anchor.setAttribute('data-redirect-to', `eq-${equationNumbers[0]}`);
+							
+							// Insert before the equation container
+							if (equation.parentNode) {
+								equation.parentNode.insertBefore(anchor, equation);
+							}
+							this.log(`Redirect anchor: eq-${eqNum} -> eq-${equationNumbers[0]}`);
+						}
+					});
+				}
+			}
 		});
 	}
 
@@ -249,7 +278,17 @@ export class EquationReferencesFeature extends BaseFeature {
 	}
 
 	private scrollToEquation(equationNumber: string): void {
-		const target = document.getElementById(`eq-${equationNumber}`);
+		let target = document.getElementById(`eq-${equationNumber}`);
+		
+		// Check if this is a redirect anchor
+		if (target && target.hasAttribute('data-redirect-to')) {
+			const redirectTo = target.getAttribute('data-redirect-to');
+			if (redirectTo) {
+				target = document.getElementById(redirectTo);
+				this.log(`Redirecting eq-${equationNumber} to ${redirectTo}`);
+			}
+		}
+		
 		if (target) {
 			// Enhanced smooth scroll with better visual feedback
 			target.scrollIntoView({ 
