@@ -1,18 +1,6 @@
 import { App, MarkdownPostProcessorContext } from 'obsidian';
 import { BaseFeature, FeatureSettings } from './base-feature';
 
-// Utility function to detect PDF export context
-function isPdfExport(el: HTMLElement): boolean {
-	return !!(
-		el.closest('.print') ||
-		el.closest('.pdf-export') ||
-		document.body.classList.contains('print') ||
-		document.body.classList.contains('pdf-export') ||
-		window.location.href.includes('print-preview') ||
-		window.matchMedia && window.matchMedia('print').matches
-	);
-}
-
 interface EquationReferencesSettings extends FeatureSettings {
 	enableEquationReferences: boolean;
 }
