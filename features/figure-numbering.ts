@@ -1,4 +1,4 @@
-import { App, TFile, MarkdownPostProcessorContext } from 'obsidian';
+import { App, TFile, MarkdownPostProcessorContext, MarkdownRenderChild } from 'obsidian';
 import { BaseFeature, FeatureSettings } from './base-feature';
 
 interface FigureInfo {
@@ -41,49 +41,29 @@ export class FigureNumberingFeature extends BaseFeature {
 	}
 
 	async process(el: HTMLElement, ctx: MarkdownPostProcessorContext): Promise<void> {
-		// Prevent duplicate processing of the same element
-		if (this.processedElements.has(el)) {
-			this.log(`Element already processed, skipping: ${el.tagName}.${el.className}`);
-			return;
-		}
+		// Use MarkdownRenderChild for persistent, event-driven processing
+		
+		// Process figure captions (blockquotes)
+		const blockquotes = el.querySelectorAll('blockquote');
+		blockquotes.forEach(blockquote => {
+			ctx.addChild(new FigureCaptionRenderer(blockquote as HTMLElement, this.app, ctx, this));
+		});
 
-		// Check for processing lock to prevent race conditions
-		if (this.processingLock.get(ctx.sourcePath)) {
-			this.log(`Processing locked for file: ${ctx.sourcePath}`);
-			return;
-		}
+		// Process figure references (links)
+		const figureLinks = el.querySelectorAll('a[href*="#^figure"]');
+		figureLinks.forEach(link => {
+			ctx.addChild(new FigureReferenceRenderer(link as HTMLElement, this.app, ctx, this));
+		});
 
-		// Set processing lock
-		this.processingLock.set(ctx.sourcePath, true);
-
-		try {
-			let figures = this.figuresByFile.get(ctx.sourcePath);
-			if (!figures || figures.length === 0) {
-				// If figures haven't been scanned yet, scan them now
-				const file = this.app.vault.getFileByPath(ctx.sourcePath);
-				if (file) {
-					await this.scanForFigures(file);
-					figures = this.figuresByFile.get(ctx.sourcePath);
-				}
-				if (!figures || figures.length === 0) {
-					return;
-				}
+		// Process embedded figures (images with figure IDs)
+		const images = el.querySelectorAll('img[src], embed[src*=".pdf"]');
+		images.forEach(img => {
+			// Check if this image has a figure ID in nearby text
+			const parent = img.closest('p, div, span');
+			if (parent && parent.textContent?.includes('^figure')) {
+				ctx.addChild(new FigureImageRenderer(img as HTMLElement, this.app, ctx, this));
 			}
-
-			this.log(`Processing block for figure numbering: ${el.tagName}.${el.className}`);
-
-			// Process figure captions by matching the block content to figure patterns
-			this.processBlockForFigures(el, figures, ctx);
-			
-			// Process figure references in links
-			this.processFigureReferences(el, figures);
-
-			// Mark element as processed
-			this.processedElements.add(el);
-		} finally {
-			// Always release the processing lock
-			this.processingLock.delete(ctx.sourcePath);
-		}
+		});
 	}
 
 	onFileOpen(filePath: string): void {
@@ -138,15 +118,21 @@ export class FigureNumberingFeature extends BaseFeature {
 			const figureText = isHebrew ? FIGURE_TEXT.hebrew : FIGURE_TEXT.english;
 
 			// Find all figure references: ![[image.ext]]^figureID (now includes PDF)
-			const figureRegex = /!\[\[([^\]]+\.(png|jpg|jpeg|gif|bmp|svg|webp|pdf)[^\]]*)\]\]\^figure([^\s]*)/gi;
+			// Updated regex to handle more edge cases including dashes and line endings
+			const figureRegex = /!\[\[([^\]]+\.(png|jpg|jpeg|gif|bmp|svg|webp|pdf)[^\]]*)\]\]\^figure([^\s\r\n]*)/gi;
 			const figures: FigureInfo[] = [];
 			let match;
 			let counter = 1;
+
+			this.log(`Scanning for figures in file: ${file.path}`);
+			this.log(`Content length: ${content.length} characters`);
 
 			while ((match = figureRegex.exec(content)) !== null) {
 				const imagePath = match[1].trim();
 				const figureId = match[3] || '';
 				const figureNumber = `${figureText} ${prefix}.${counter}`;
+
+				this.log(`Regex match ${counter}: Full match="${match[0]}", Image="${imagePath}", ID="${figureId}"`);
 
 				figures.push({
 					number: figureNumber,
@@ -157,6 +143,16 @@ export class FigureNumberingFeature extends BaseFeature {
 				this.log(`Found figure: ${imagePath} -> ${figureNumber} (ID: ${figureId})`);
 
 				counter++;
+			}
+
+			this.log(`Total figures found: ${figures.length}`);
+
+			// Fallback search: look for any ^figure patterns that might have been missed
+			const fallbackRegex = /\^figure[^\s\r\n]*/gi;
+			const fallbackMatches = content.match(fallbackRegex) || [];
+			if (fallbackMatches.length !== figures.length) {
+				this.log(`WARNING: Fallback search found ${fallbackMatches.length} ^figure patterns, but main regex found ${figures.length} figures`);
+				this.log(`Fallback matches: ${fallbackMatches.join(', ')}`);
 			}
 
 			this.figuresByFile.set(file.path, figures);
@@ -278,7 +274,7 @@ export class FigureNumberingFeature extends BaseFeature {
 		}
 	}
 
-	private scrollToFigure(figureId: string): void {
+	public scrollToFigure(figureId: string): void {
 		try {
 			// Look for the figure by searching for elements with the figure ID
 			const figureSelector = `[src*="${figureId}"], img[alt*="${figureId}"], [data-figure-id="${figureId}"]`;
@@ -347,5 +343,211 @@ export class FigureNumberingFeature extends BaseFeature {
 		this.processedElements = new WeakSet();
 		this.processingLock.clear();
 		this.log(`Reset all caches and processed elements`);
+	}
+
+	// Get figure cache with proper line-based lookup
+	getFigureByLinePosition(filePath: string, lineStart: number, lineEnd: number): FigureInfo | null {
+		try {
+			const figures = this.figuresByFile.get(filePath);
+			if (!figures) return null;
+
+			// Get assigned figures for this file
+			let assignedSet = this.assignedFigures.get(filePath);
+			if (!assignedSet) {
+				assignedSet = new Set<string>();
+				this.assignedFigures.set(filePath, assignedSet);
+			}
+
+			// Find the next available figure based on document order
+			return this.getNextAvailableFigure(figures, assignedSet);
+		} catch (error) {
+			this.log(`Error getting figure by line position: ${error}`);
+			return null;
+		}
+	}
+
+	// Mark a figure as assigned
+	assignFigure(filePath: string, figureId: string): void {
+		let assignedSet = this.assignedFigures.get(filePath);
+		if (!assignedSet) {
+			assignedSet = new Set<string>();
+			this.assignedFigures.set(filePath, assignedSet);
+		}
+		assignedSet.add(figureId);
+	}
+
+	// Find figure by ID
+	getFigureById(filePath: string, figureId: string): FigureInfo | null {
+		const figures = this.figuresByFile.get(filePath);
+		return figures?.find(f => f.id === figureId) || null;
+	}
+
+	// Public logging method for render children
+	public logMessage(message: string): void {
+		this.log(message);
+	}
+}
+
+// Persistent renderer for figure captions using MarkdownRenderChild
+class FigureCaptionRenderer extends MarkdownRenderChild {
+	constructor(
+		containerEl: HTMLElement,
+		private app: App,
+		private context: MarkdownPostProcessorContext,
+		private feature: FigureNumberingFeature
+	) {
+		super(containerEl);
+	}
+
+	async onload() {
+		// Register for index updates
+		this.registerEvent(
+			this.app.vault.on('modify', (file) => {
+				if (file.path === this.context.sourcePath) {
+					setTimeout(() => this.update(), 100);
+				}
+			})
+		);
+
+		// Initial update with delay
+		setTimeout(() => this.update(), 200);
+	}
+
+	private update(): void {
+		try {
+			const paragraph = this.containerEl.querySelector('p');
+			if (!paragraph) return;
+
+			const originalText = paragraph.textContent || '';
+			
+			// Skip if already has figure number
+			if (/^(Figure|איור)\s+[\w\d.-]+:/.test(originalText)) {
+				return;
+			}
+
+			// Get line information for proper figure assignment
+			const sectionInfo = this.context.getSectionInfo(this.containerEl);
+			if (!sectionInfo) return;
+
+			// Get the next available figure
+			const figure = this.feature.getFigureByLinePosition(
+				this.context.sourcePath, 
+				sectionInfo.lineStart, 
+				sectionInfo.lineEnd
+			);
+
+			if (figure) {
+				this.feature.assignFigure(this.context.sourcePath, figure.id);
+				
+				// Update caption
+				const cleanHTML = paragraph.innerHTML
+					.replace(/^(Figure|איור)\s+[\d.-]+:\s*/i, '')
+					.trim();
+				
+				paragraph.innerHTML = `${figure.number}: ${cleanHTML}`;
+				this.feature.logMessage(`Assigned ${figure.number} (ID: ${figure.id})`);
+			}
+		} catch (error) {
+			this.feature.logMessage(`Error updating figure caption: ${error}`);
+		}
+	}
+}
+
+// Persistent renderer for figure references
+class FigureReferenceRenderer extends MarkdownRenderChild {
+	constructor(
+		containerEl: HTMLElement,
+		private app: App,
+		private context: MarkdownPostProcessorContext,
+		private feature: FigureNumberingFeature
+	) {
+		super(containerEl);
+	}
+
+	async onload() {
+		// Register for index updates
+		this.registerEvent(
+			this.app.vault.on('modify', (file) => {
+				if (file.path === this.context.sourcePath) {
+					setTimeout(() => this.update(), 100);
+				}
+			})
+		);
+
+		// Initial update
+		setTimeout(() => this.update(), 150);
+	}
+
+	private update(): void {
+		try {
+			const link = this.containerEl as HTMLAnchorElement;
+			const href = link.getAttribute('href') || '';
+			const figureMatch = href.match(/#\^figure([^\s&]*)/);
+			
+			if (!figureMatch) return;
+			
+			const figureId = figureMatch[1];
+			const figure = this.feature.getFigureById(this.context.sourcePath, figureId);
+			
+			if (figure) {
+				link.textContent = figure.number;
+				
+				// Add enhanced click behavior
+				link.addEventListener('click', (e) => {
+					e.preventDefault();
+					this.feature.scrollToFigure(figureId);
+				});
+				
+				this.feature.logMessage(`Updated figure reference: ${href} -> ${figure.number}`);
+			}
+		} catch (error) {
+			this.feature.logMessage(`Error updating figure reference: ${error}`);
+		}
+	}
+}
+
+// Persistent renderer for figure images
+class FigureImageRenderer extends MarkdownRenderChild {
+	constructor(
+		containerEl: HTMLElement,
+		private app: App,
+		private context: MarkdownPostProcessorContext,
+		private feature: FigureNumberingFeature
+	) {
+		super(containerEl);
+	}
+
+	async onload() {
+		// Register for updates
+		this.registerEvent(
+			this.app.vault.on('modify', (file) => {
+				if (file.path === this.context.sourcePath) {
+					setTimeout(() => this.update(), 100);
+				}
+			})
+		);
+
+		// Initial update
+		setTimeout(() => this.update(), 100);
+	}
+
+	private update(): void {
+		try {
+			// Extract figure ID from surrounding context
+			const parent = this.containerEl.closest('p, div');
+			if (!parent) return;
+
+			const textContent = parent.textContent || '';
+			const figureMatch = textContent.match(/\^figure([^\s]*)/);
+			
+			if (figureMatch) {
+				const figureId = figureMatch[1];
+				// Add data attribute for figure targeting
+				this.containerEl.setAttribute('data-figure-id', figureId);
+				this.feature.logMessage(`Marked image with figure ID: ${figureId}`);
+			}
+		} catch (error) {
+			this.feature.logMessage(`Error updating figure image: ${error}`);
+		}
 	}
 } 
