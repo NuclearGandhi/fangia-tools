@@ -1,6 +1,20 @@
 import { App, TFile, MarkdownPostProcessorContext, MarkdownRenderChild } from 'obsidian';
 import { BaseFeature, FeatureSettings } from './base-feature';
 
+// Utility function to detect PDF export context
+function isPdfExport(el: HTMLElement): boolean {
+	// Check various indicators that we're in a PDF export context
+	return !!(
+		el.closest('.print') ||
+		el.closest('.pdf-export') ||
+		document.body.classList.contains('print') ||
+		document.body.classList.contains('pdf-export') ||
+		window.location.href.includes('print-preview') ||
+		// Check if this is a print media query context
+		window.matchMedia && window.matchMedia('print').matches
+	);
+}
+
 interface FigureInfo {
 	number: string;
 	id: string;
@@ -41,6 +55,12 @@ export class FigureNumberingFeature extends BaseFeature {
 	}
 
 	async process(el: HTMLElement, ctx: MarkdownPostProcessorContext): Promise<void> {
+		// Special handling for PDF export
+		if (isPdfExport(el)) {
+			await this.preprocessForPdfExport(el, ctx);
+			return;
+		}
+
 		// Use MarkdownRenderChild for persistent, event-driven processing
 		
 		// Process figure captions (blockquotes)
@@ -385,6 +405,110 @@ export class FigureNumberingFeature extends BaseFeature {
 	// Public logging method for render children
 	public logMessage(message: string): void {
 		this.log(message);
+	}
+
+	// PDF export preprocessing - directly apply figure numbers to static HTML
+	private async preprocessForPdfExport(el: HTMLElement, ctx: MarkdownPostProcessorContext): Promise<void> {
+		try {
+			this.log('Processing for PDF export');
+			
+			// Ensure figures are scanned for this file
+			const file = this.app.vault.getFileByPath(ctx.sourcePath);
+			if (!file) return;
+
+			let figures = this.figuresByFile.get(ctx.sourcePath);
+			if (!figures || figures.length === 0) {
+				await this.scanForFigures(file);
+				figures = this.figuresByFile.get(ctx.sourcePath);
+			}
+			if (!figures || figures.length === 0) return;
+
+			// For PDF export, we need to directly modify the HTML since MarkdownRenderChild won't work
+			this.processPdfFigureCaptions(el, figures, ctx);
+			this.processPdfFigureReferences(el, figures);
+			this.processPdfFigureImages(el, figures);
+
+		} catch (error) {
+			this.log(`Error in PDF export preprocessing: ${error}`);
+		}
+	}
+
+	private processPdfFigureCaptions(el: HTMLElement, figures: FigureInfo[], ctx: MarkdownPostProcessorContext): void {
+		try {
+			const blockquotes = el.querySelectorAll('blockquote');
+			let figureIndex = 0;
+
+			blockquotes.forEach((blockquote) => {
+				const paragraph = blockquote.querySelector('p');
+				if (!paragraph) return;
+
+				const originalText = paragraph.textContent || '';
+				
+				// Skip if already has figure number
+				if (/^(Figure|איור)\s+[\w\d.-]+:/.test(originalText)) {
+					return;
+				}
+
+				// Assign next figure in order
+				if (figureIndex < figures.length) {
+					const figure = figures[figureIndex];
+					const cleanHTML = paragraph.innerHTML
+						.replace(/^(Figure|איור)\s+[\d.-]+:\s*/i, '')
+						.trim();
+					
+					paragraph.innerHTML = `${figure.number}: ${cleanHTML}`;
+					this.log(`PDF: Assigned ${figure.number} to caption`);
+					figureIndex++;
+				}
+			});
+		} catch (error) {
+			this.log(`Error processing PDF figure captions: ${error}`);
+		}
+	}
+
+	private processPdfFigureReferences(el: HTMLElement, figures: FigureInfo[]): void {
+		try {
+			const links = el.querySelectorAll('a[href*="#^figure"]');
+			
+			links.forEach(link => {
+				const href = link.getAttribute('href') || '';
+				const figureMatch = href.match(/#\^figure([^\s&]*)/);
+				
+				if (!figureMatch) return;
+				
+				const figureId = figureMatch[1];
+				const figure = figures.find(f => f.id === figureId);
+				
+				if (figure) {
+					link.textContent = figure.number;
+					// Remove href for PDF (links won't work anyway)
+					link.removeAttribute('href');
+					const linkEl = link as HTMLElement;
+					linkEl.style.color = 'inherit';
+					linkEl.style.textDecoration = 'none';
+					this.log(`PDF: Updated figure reference to ${figure.number}`);
+				}
+			});
+		} catch (error) {
+			this.log(`Error processing PDF figure references: ${error}`);
+		}
+	}
+
+	private processPdfFigureImages(el: HTMLElement, figures: FigureInfo[]): void {
+		try {
+			const images = el.querySelectorAll('img[src], embed[src*=".pdf"]');
+			
+			images.forEach((img, index) => {
+				// Add data attributes for PDF context
+				if (index < figures.length) {
+					img.setAttribute('data-figure-number', figures[index].number);
+					img.setAttribute('data-figure-id', figures[index].id);
+					this.log(`PDF: Marked image with ${figures[index].number}`);
+				}
+			});
+		} catch (error) {
+			this.log(`Error processing PDF figure images: ${error}`);
+		}
 	}
 }
 
