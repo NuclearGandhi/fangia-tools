@@ -1,6 +1,18 @@
 import { App, MarkdownPostProcessorContext } from 'obsidian';
 import { BaseFeature, FeatureSettings } from './base-feature';
 
+// Utility function to detect PDF export context
+function isPdfExport(el: HTMLElement): boolean {
+	return !!(
+		el.closest('.print') ||
+		el.closest('.pdf-export') ||
+		document.body.classList.contains('print') ||
+		document.body.classList.contains('pdf-export') ||
+		window.location.href.includes('print-preview') ||
+		window.matchMedia && window.matchMedia('print').matches
+	);
+}
+
 interface EquationReferencesSettings extends FeatureSettings {
 	enableEquationReferences: boolean;
 }
@@ -52,10 +64,14 @@ export class EquationReferencesFeature extends BaseFeature {
 					
 					// Check various patterns for equation references
 					const patterns = [
-						/^\((\d+(?:\.\d+)*)\)$/,          // (4.13)
-						/^Eq\.?\s*(\d+(?:\.\d+)*)$/i,     // Eq. 4.13 or Eq 4.13
-						/^Equation\s*(\d+(?:\.\d+)*)$/i,  // Equation 4.13
-						/^\(Eq\.?\s*(\d+(?:\.\d+)*)\)$/i, // (Eq. 4.13)
+						/^\((\d+(?:[.\-]\d+)*)\)$/,                           // (4.13) or (4-13)
+						/^\(([HWLPhlwlp]+\d+(?:[.\-]\d+)*)\)$/,               // (HW3.8) or (HW3-8) or (L2.5) or (P1-3)
+						/^Eq\.?\s*(\d+(?:[.\-]\d+)*)$/i,                      // Eq. 4.13 or Eq 4-13
+						/^Eq\.?\s*([HWLPhlwlp]+\d+(?:[.\-]\d+)*)$/i,          // Eq. HW3.8 or Eq HW3-8
+						/^Equation\s*(\d+(?:[.\-]\d+)*)$/i,                   // Equation 4.13 or Equation 4-13
+						/^Equation\s*([HWLPhlwlp]+\d+(?:[.\-]\d+)*)$/i,       // Equation HW3.8 or Equation HW3-8
+						/^\(Eq\.?\s*(\d+(?:[.\-]\d+)*)\)$/i,                  // (Eq. 4.13) or (Eq. 4-13)
+						/^\(Eq\.?\s*([HWLPhlwlp]+\d+(?:[.\-]\d+)*)\)$/i,      // (Eq. HW3.8) or (Eq. HW3-8)
 					];
 
 					for (const pattern of patterns) {
@@ -117,16 +133,24 @@ export class EquationReferencesFeature extends BaseFeature {
 			labels.forEach(label => {
 				const tagText = this.extractMathJaxText(label as HTMLElement);
 				
-				// Check if this looks like an equation tag
-				const tagMatch = tagText.match(/^\((\d+(?:\.\d+)*)\)$/);
-				if (tagMatch) {
-					const equationNumber = tagMatch[1];
-					const anchorId = `eq-${equationNumber}`;
-					
-					// Add HTML anchor ID (this actually works!)
-					if (!equation.id) {
-						equation.id = anchorId;
-						this.log(`Anchor: eq-${equationNumber}`);
+				// Check if this looks like an equation tag (support prefixes and different separators)
+				const tagPatterns = [
+					/^\((\d+(?:[.\-]\d+)*)\)$/,                    // (4.13) or (4-13)
+					/^\(([HWLPhlwlp]+\d+(?:[.\-]\d+)*)\)$/         // (HW3.8) or (HW3-8) or (L2.5) or (P1-3)
+				];
+				
+				for (const tagPattern of tagPatterns) {
+					const tagMatch = tagText.match(tagPattern);
+					if (tagMatch) {
+						const equationNumber = tagMatch[1];
+						const anchorId = `eq-${equationNumber}`;
+						
+						// Add HTML anchor ID (this actually works!)
+						if (!equation.id) {
+							equation.id = anchorId;
+							this.log(`Anchor: eq-${equationNumber}`);
+						}
+						break; // Stop after first match
 					}
 				}
 			});
@@ -276,10 +300,12 @@ export class EquationReferencesFeature extends BaseFeature {
 // Alternative approach: Markdown preprocessor
 export class EquationReferencesPreprocessor {
 	static processMarkdown(content: string): string {
-		// Pattern to match equation references like $\text{(4.13)}$ or $(4.13)$
+		// Pattern to match equation references like $\text{(4.13)}$, $(HW3.8)$, etc.
 		const patterns = [
-			/\$\\text\{(\([0-9]+(?:\.[0-9]+)*\))\}\$/g,  // $\text{(4.13)}$
-			/\$(\([0-9]+(?:\.[0-9]+)*\))\$/g,            // $(4.13)$
+			/\$\\text\{(\([0-9]+(?:[.\-][0-9]+)*\))\}\$/g,              // $\text{(4.13)}$ or $\text{(4-13)}$
+			/\$\\text\{(\([HWLPhlwlp]+[0-9]+(?:[.\-][0-9]+)*\))\}\$/g,  // $\text{(HW3.8)}$ or $\text{(HW3-8)}$
+			/\$(\([0-9]+(?:[.\-][0-9]+)*\))\$/g,                        // $(4.13)$ or $(4-13)$
+			/\$(\([HWLPhlwlp]+[0-9]+(?:[.\-][0-9]+)*\))\$/g,            // $(HW3.8)$ or $(HW3-8)$
 		];
 
 		let processedContent = content;

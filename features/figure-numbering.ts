@@ -480,13 +480,25 @@ export class FigureNumberingFeature extends BaseFeature {
 				const figure = figures.find(f => f.id === figureId);
 				
 				if (figure) {
-					link.textContent = figure.number;
-					// Remove href for PDF (links won't work anyway)
-					link.removeAttribute('href');
+					// For PDF, replace link with styled text that includes page reference hint
 					const linkEl = link as HTMLElement;
+					linkEl.textContent = `${figure.number}`;
+					
+					// Remove href since internal links don't work well across page breaks
+					linkEl.removeAttribute('href');
 					linkEl.style.color = 'inherit';
 					linkEl.style.textDecoration = 'none';
-					this.log(`PDF: Updated figure reference to ${figure.number}`);
+					
+					// Add a small visual indicator that this was a reference
+					linkEl.style.fontWeight = 'bold';
+					linkEl.style.backgroundColor = 'rgba(var(--accent-h), var(--accent-s), var(--accent-l), 0.1)';
+					linkEl.style.padding = '1px 3px';
+					linkEl.style.borderRadius = '3px';
+					
+					// Add title attribute for accessibility/tooltips
+					linkEl.setAttribute('title', `Reference to ${figure.number} (ID: ${figureId})`);
+					
+					this.log(`PDF: Updated figure reference to ${figure.number} with styling`);
 				}
 			});
 		} catch (error) {
