@@ -131,93 +131,105 @@ export class FigureNumberingFeature extends BaseFeature {
 
 	// Scan document for figures and create numbering
 	private async scanForFigures(file: TFile): Promise<void> {
-		const content = await this.app.vault.read(file);
-		const isHebrew = this.isHebrewContent(content);
-		const prefix = this.getFilePrefix(file.basename);
-		const figureText = isHebrew ? FIGURE_TEXT.hebrew : FIGURE_TEXT.english;
+		try {
+			const content = await this.app.vault.read(file);
+			const isHebrew = this.isHebrewContent(content);
+			const prefix = this.getFilePrefix(file.basename);
+			const figureText = isHebrew ? FIGURE_TEXT.hebrew : FIGURE_TEXT.english;
 
-		// Find all figure references: ![[image.ext]]^figureID
-		const figureRegex = /!\[\[([^\]]+\.(png|jpg|jpeg|gif|bmp|svg|webp)[^\]]*)\]\]\^figure([^\s]*)/gi;
-		const figures: FigureInfo[] = [];
-		let match;
-		let counter = 1;
+			// Find all figure references: ![[image.ext]]^figureID (now includes PDF)
+			const figureRegex = /!\[\[([^\]]+\.(png|jpg|jpeg|gif|bmp|svg|webp|pdf)[^\]]*)\]\]\^figure([^\s]*)/gi;
+			const figures: FigureInfo[] = [];
+			let match;
+			let counter = 1;
 
-		while ((match = figureRegex.exec(content)) !== null) {
-			const imagePath = match[1].trim();
-			const figureId = match[3] || '';
-			const figureNumber = `${figureText} ${prefix}.${counter}`;
+			while ((match = figureRegex.exec(content)) !== null) {
+				const imagePath = match[1].trim();
+				const figureId = match[3] || '';
+				const figureNumber = `${figureText} ${prefix}.${counter}`;
 
-			figures.push({
-				number: figureNumber,
-				id: figureId,
-				imagePath: imagePath
-			});
+				figures.push({
+					number: figureNumber,
+					id: figureId,
+					imagePath: imagePath
+				});
 
-			this.log(`Found figure: ${imagePath} -> ${figureNumber} (ID: ${figureId})`);
+				this.log(`Found figure: ${imagePath} -> ${figureNumber} (ID: ${figureId})`);
 
-			counter++;
+				counter++;
+			}
+
+			this.figuresByFile.set(file.path, figures);
+		} catch (error) {
+			this.log(`Error scanning figures in file ${file.path}: ${error}`);
+			// Set empty array on error to prevent repeated scanning attempts
+			this.figuresByFile.set(file.path, []);
 		}
-
-		this.figuresByFile.set(file.path, figures);
 	}
 
 	// Process a specific block for figure captions using document-order based matching
 	private processBlockForFigures(el: HTMLElement, figures: FigureInfo[], ctx: MarkdownPostProcessorContext): void {
-		// Look for blockquote elements (these contain captions)
-		const blockquotes = el.querySelectorAll('blockquote');
-		if (blockquotes.length === 0) {
-			return;
+		try {
+			// Look for blockquote elements (these contain captions)
+			const blockquotes = el.querySelectorAll('blockquote');
+			if (blockquotes.length === 0) {
+				return;
+			}
+
+			this.log(`Found ${blockquotes.length} blockquotes in block`);
+
+			// Get or initialize the assignment tracking for this file
+			let assignedFiguresSet = this.assignedFigures.get(ctx.sourcePath);
+			if (!assignedFiguresSet) {
+				assignedFiguresSet = new Set<string>();
+				this.assignedFigures.set(ctx.sourcePath, assignedFiguresSet);
+			}
+
+			// Process each blockquote - assign figures in document order
+			blockquotes.forEach((blockquote) => {
+				try {
+					const paragraph = blockquote.querySelector('p');
+					if (!paragraph) {
+						return;
+					}
+
+					const originalText = paragraph.textContent || '';
+					const originalHTML = paragraph.innerHTML || '';
+					
+					// Check if caption already has a figure number (any figure number)
+					if (/^(Figure|איור)\s+[\w\d.-]+:/.test(originalText)) {
+						this.log(`Caption already has figure number, skipping`);
+						return;
+					}
+					
+					// Find the next available figure in document order
+					const nextFigure = this.getNextAvailableFigure(figures, assignedFiguresSet);
+					if (!nextFigure) {
+						this.log(`No more figures available for caption`);
+						return;
+					}
+					
+					// Mark this figure as assigned
+					assignedFiguresSet.add(nextFigure.id);
+					
+					// Remove any existing figure labels (just in case)
+					const cleanHTML = originalHTML
+						.replace(/^(Figure|איור)\s+[\d.-]+:\s*/i, '')
+						.trim();
+					
+					// Add the figure number with error handling
+					if (paragraph && nextFigure) {
+						paragraph.innerHTML = `${nextFigure.number}: ${cleanHTML}`;
+						this.log(`Assigned ${nextFigure.number} (ID: ${nextFigure.id})`);
+					}
+				} catch (blockquoteError) {
+					this.log(`Error processing blockquote: ${blockquoteError}`);
+					// Continue processing other blockquotes
+				}
+			});
+		} catch (error) {
+			this.log(`Error processing block for figures: ${error}`);
 		}
-
-		this.log(`Found ${blockquotes.length} blockquotes in block`);
-
-		// Get or initialize the assignment tracking for this file
-		let assignedFiguresSet = this.assignedFigures.get(ctx.sourcePath);
-		if (!assignedFiguresSet) {
-			assignedFiguresSet = new Set<string>();
-			this.assignedFigures.set(ctx.sourcePath, assignedFiguresSet);
-		}
-
-		// Process each blockquote - assign figures in document order
-		blockquotes.forEach((blockquote) => {
-			const paragraph = blockquote.querySelector('p');
-			if (!paragraph) {
-				return;
-			}
-
-			const originalText = paragraph.textContent || '';
-			const originalHTML = paragraph.innerHTML || '';
-			
-			// Check if caption already has a figure number (any figure number)
-			if (/^(Figure|איור)\s+[\w\d.-]+:/.test(originalText)) {
-				this.log(`Caption already has figure number, skipping: "${originalText.substring(0, 50)}..."`);
-				return;
-			}
-			
-			// Find the next available figure in document order
-			const nextFigure = this.getNextAvailableFigure(figures, assignedFiguresSet);
-			if (!nextFigure) {
-				this.log(`No more figures available for caption: "${originalText.substring(0, 30)}..."`);
-				return;
-			}
-			
-			// Mark this figure as assigned
-			assignedFiguresSet.add(nextFigure.id);
-			
-			// Remove any existing figure labels (just in case)
-			const cleanText = originalText
-				.replace(/^(Figure|איור)\s+[\d.-]+:\s*/i, '')
-				.trim();
-
-			const cleanHTML = originalHTML
-				.replace(/^(Figure|איור)\s+[\d.-]+:\s*/i, '')
-				.trim();
-			
-			// Add the figure number
-			paragraph.innerHTML = `${nextFigure.number}: ${cleanHTML}`;
-
-			this.log(`Assigned ${nextFigure.number} to caption: "${cleanText}" (Figure ID: ${nextFigure.id})`);
-		});
 	}
 
 	// Get the next available figure in document order
@@ -232,22 +244,90 @@ export class FigureNumberingFeature extends BaseFeature {
 
 	// Process figure references in links
 	private processFigureReferences(el: HTMLElement, figures: FigureInfo[]): void {
-		const links = el.querySelectorAll('a[href*="#^figure"]');
-		
-		links.forEach(link => {
-			const href = link.getAttribute('href') || '';
-			const figureMatch = href.match(/#\^figure([^\s&]*)/);
+		try {
+			const links = el.querySelectorAll('a[href*="#^figure"]');
 			
-			if (!figureMatch) return;
+			links.forEach(link => {
+				try {
+					const href = link.getAttribute('href') || '';
+					const figureMatch = href.match(/#\^figure([^\s&]*)/);
+					
+					if (!figureMatch) return;
+					
+					const figureId = figureMatch[1];
+					const figure = figures.find(f => f.id === figureId);
+					
+					if (figure) {
+						link.textContent = figure.number;
+						
+						// Add enhanced click behavior for figure references
+						link.addEventListener('click', (e) => {
+							e.preventDefault();
+							this.scrollToFigure(figureId);
+						});
+						
+						this.log(`Updated figure reference: ${href} -> ${figure.number}`);
+					}
+				} catch (linkError) {
+					this.log(`Error processing figure link: ${linkError}`);
+					// Continue processing other links
+				}
+			});
+		} catch (error) {
+			this.log(`Error processing figure references: ${error}`);
+		}
+	}
+
+	private scrollToFigure(figureId: string): void {
+		try {
+			// Look for the figure by searching for elements with the figure ID
+			const figureSelector = `[src*="${figureId}"], img[alt*="${figureId}"], [data-figure-id="${figureId}"]`;
+			let target = document.querySelector(figureSelector) as HTMLElement;
 			
-			const figureId = figureMatch[1];
-			const figure = figures.find(f => f.id === figureId);
-			
-			if (figure) {
-				link.textContent = figure.number;
-				this.log(`Updated figure reference: ${href} -> ${figure.number}`);
+			// Fallback: try to find by block reference
+			if (!target) {
+				const blockRef = document.querySelector(`[data-block-id="figure${figureId}"]`) as HTMLElement;
+				if (blockRef) {
+					target = blockRef;
+				}
 			}
-		});
+			
+			// Another fallback: try standard anchor navigation
+			if (!target) {
+				window.location.hash = `^figure${figureId}`;
+				return;
+			}
+
+			if (target) {
+				// Enhanced smooth scroll with better visual feedback
+				target.scrollIntoView({ 
+					behavior: 'smooth', 
+					block: 'center',
+					inline: 'nearest'
+				});
+				
+				// Add highlight effect to the figure
+				const originalTransition = target.style.transition;
+				const originalBoxShadow = target.style.boxShadow;
+				const originalTransform = target.style.transform;
+				
+				target.style.transition = 'all 0.3s ease';
+				target.style.boxShadow = '0 0 20px var(--text-accent)';
+				target.style.transform = 'scale(1.02)';
+				
+				setTimeout(() => {
+					target.style.boxShadow = originalBoxShadow;
+					target.style.transform = originalTransform;
+					setTimeout(() => {
+						target.style.transition = originalTransition;
+					}, 300);
+				}, 800);
+			}
+		} catch (error) {
+			this.log(`Error scrolling to figure ${figureId}: ${error}`);
+			// Fallback: try standard navigation
+			window.location.hash = `^figure${figureId}`;
+		}
 	}
 
 	// Clear cache for a specific file

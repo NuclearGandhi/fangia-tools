@@ -29,42 +29,77 @@ export class EquationReferencesFeature extends BaseFeature {
 	}
 
 	private processRenderedEquationReferences(el: HTMLElement, ctx: MarkdownPostProcessorContext): void {
-		// First pass: Add anchor IDs to equations with tags
-		this.addEquationAnchors(el);
-		
-		// Second pass: Look for MathJax containers that might be equation references
-		const mathContainers = el.querySelectorAll('mjx-container.MathJax');
-		
-		this.log(`Processing ${mathContainers.length} MathJax containers`);
-		
-		mathContainers.forEach((container, index) => {
-			// Skip if already processed or display equation
-			if (container.closest('a.equation-reference') || container.getAttribute('display') === 'true') {
-				return;
-			}
-
-			const textContent = this.extractMathJaxText(container as HTMLElement);
+		try {
+			// First pass: Add anchor IDs to equations with tags
+			this.addEquationAnchors(el);
 			
-			// Check various patterns for equation references
-			const patterns = [
-				/^\((\d+(?:\.\d+)*)\)$/,          // (4.13)
-				/^Eq\.?\s*(\d+(?:\.\d+)*)$/i,     // Eq. 4.13 or Eq 4.13
-				/^Equation\s*(\d+(?:\.\d+)*)$/i,  // Equation 4.13
-				/^\(Eq\.?\s*(\d+(?:\.\d+)*)\)$/i, // (Eq. 4.13)
-			];
+			// Second pass: Look for MathJax containers that might be equation references
+			const mathContainers = el.querySelectorAll('mjx-container.MathJax');
+			
+			this.log(`Processing ${mathContainers.length} MathJax containers`);
+			
+			// Third pass: Also look for equations in embedded PDFs or images
+			this.processEmbeddedEquations(el, ctx);
+			
+			mathContainers.forEach((container, index) => {
+				try {
+					// Skip if already processed or display equation
+					if (container.closest('a.equation-reference') || container.getAttribute('display') === 'true') {
+						return;
+					}
 
-			for (const pattern of patterns) {
-				const refMatch = textContent.match(pattern);
-				if (refMatch) {
-					const equationNumber = refMatch[1];
-					this.log(`Ref: "${textContent}" → eq-${equationNumber}`);
+					const textContent = this.extractMathJaxText(container as HTMLElement);
 					
-					// Convert to clickable link
-					this.convertToEquationLink(container as HTMLElement, equationNumber, ctx);
-					break; // Stop after first match
+					// Check various patterns for equation references
+					const patterns = [
+						/^\((\d+(?:\.\d+)*)\)$/,          // (4.13)
+						/^Eq\.?\s*(\d+(?:\.\d+)*)$/i,     // Eq. 4.13 or Eq 4.13
+						/^Equation\s*(\d+(?:\.\d+)*)$/i,  // Equation 4.13
+						/^\(Eq\.?\s*(\d+(?:\.\d+)*)\)$/i, // (Eq. 4.13)
+					];
+
+					for (const pattern of patterns) {
+						const refMatch = textContent.match(pattern);
+						if (refMatch) {
+							const equationNumber = refMatch[1];
+							this.log(`Ref: "${textContent}" → eq-${equationNumber}`);
+							
+							// Convert to clickable link
+							this.convertToEquationLink(container as HTMLElement, equationNumber, ctx);
+							break; // Stop after first match
+						}
+					}
+				} catch (containerError) {
+					this.log(`Error processing container: ${containerError}`);
+					// Continue processing other containers
 				}
+			});
+		} catch (error) {
+			this.log(`Error processing equation references: ${error}`);
+		}
+	}
+
+	private processEmbeddedEquations(el: HTMLElement, ctx: MarkdownPostProcessorContext): void {
+		try {
+			// Look for embedded PDFs that might contain equations
+			const pdfEmbeds = el.querySelectorAll('iframe[src*=".pdf"], embed[src*=".pdf"], object[data*=".pdf"]');
+			
+			if (pdfEmbeds.length > 0) {
+				this.log(`Found ${pdfEmbeds.length} embedded PDFs`);
+				// Note: Extracting equations from PDFs would require additional PDF processing
+				// For now, just log their presence
 			}
-		});
+
+			// Look for images that might contain equation references (screenshots, etc.)
+			const images = el.querySelectorAll('img[src*="equation"], img[alt*="equation"], img[src*="eq-"]');
+			
+			if (images.length > 0) {
+				this.log(`Found ${images.length} potential equation images`);
+				// Could implement OCR or alt-text parsing here in the future
+			}
+		} catch (error) {
+			this.log(`Error processing embedded equations: ${error}`);
+		}
 	}
 
 	private addEquationAnchors(el: HTMLElement): void {
@@ -99,42 +134,73 @@ export class EquationReferencesFeature extends BaseFeature {
 	}
 
 	private extractMathJaxText(container: HTMLElement): string {
-		// Method 1: Try to get from title or data attributes first
-		const title = container.getAttribute('title') || 
-					 container.getAttribute('aria-label') ||
-					 container.getAttribute('data-original-text');
-		if (title) {
-			return title;
-		}
+		try {
+			// Method 1: Try to get from title or data attributes first
+			const title = container.getAttribute('title') || 
+						 container.getAttribute('aria-label') ||
+						 container.getAttribute('data-original-text');
+			if (title && title.trim()) {
+				return title.trim();
+			}
 
-		// Method 2: Try to reconstruct from character codes
-		const chars: string[] = [];
-		const mjxChars = container.querySelectorAll('mjx-c');
-		
-		mjxChars.forEach((mjxChar) => {
-			const classList = Array.from(mjxChar.classList);
+			// Method 2: Try to reconstruct from character codes
+			const chars: string[] = [];
+			const mjxChars = container.querySelectorAll('mjx-c');
 			
-			// Look for class that starts with 'mjx-c' and has more characters (the hex code)
-			const charClass = classList.find(cls => cls.startsWith('mjx-c') && cls.length > 5);
-			
-			if (charClass) {
-				const hexCode = charClass.substring(5); // Remove 'mjx-c' prefix
-				const charCode = parseInt(hexCode, 16);
-				
-				if (!isNaN(charCode) && charCode > 0) {
-					const char = String.fromCharCode(charCode);
-					chars.push(char);
+			mjxChars.forEach((mjxChar) => {
+				try {
+					const classList = Array.from(mjxChar.classList);
+					
+					// Look for class that starts with 'mjx-c' and has more characters (the hex code)
+					const charClass = classList.find(cls => cls.startsWith('mjx-c') && cls.length > 5);
+					
+					if (charClass) {
+						const hexCode = charClass.substring(5); // Remove 'mjx-c' prefix
+						const charCode = parseInt(hexCode, 16);
+						
+						if (!isNaN(charCode) && charCode > 0) {
+							const char = String.fromCharCode(charCode);
+							chars.push(char);
+						}
+					} else {
+						// Fallback: try to get text content directly
+						const textContent = mjxChar.textContent?.trim();
+						if (textContent) {
+							chars.push(textContent);
+						}
+					}
+				} catch (charError) {
+					// Skip problematic characters but continue processing
+					this.log(`Warning: Failed to extract character: ${charError}`);
 				}
-			} else {
-				// Fallback: try to get text content directly
-				const textContent = mjxChar.textContent?.trim();
-				if (textContent) {
-					chars.push(textContent);
+			});
+
+			const result = chars.join('');
+			if (result) {
+				return result;
+			}
+
+			// Method 3: Final fallback - try to get any text content from the container
+			const fallbackText = container.textContent?.trim();
+			if (fallbackText) {
+				return fallbackText;
+			}
+
+			// Method 4: Last resort - check for specific MathJax structure patterns
+			const mjxMath = container.querySelector('mjx-math');
+			if (mjxMath) {
+				const mathText = mjxMath.textContent?.trim();
+				if (mathText) {
+					return mathText;
 				}
 			}
-		});
 
-		return chars.join('');
+			return '';
+		} catch (error) {
+			this.log(`Error extracting MathJax text: ${error}`);
+			// Return empty string rather than failing completely
+			return '';
+		}
 	}
 
 	private convertToEquationLink(container: HTMLElement, equationNumber: string, ctx: MarkdownPostProcessorContext): void {
@@ -153,16 +219,7 @@ export class EquationReferencesFeature extends BaseFeature {
 			// Add smooth scrolling behavior
 			link.addEventListener('click', (e) => {
 				e.preventDefault();
-				const target = document.getElementById(`eq-${equationNumber}`);
-				if (target) {
-					target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-					// Add a brief highlight effect
-					target.style.transition = 'background-color 0.3s ease';
-					target.style.backgroundColor = 'var(--background-modifier-hover)';
-					setTimeout(() => {
-						target.style.backgroundColor = '';
-					}, 1000);
-				}
+				this.scrollToEquation(equationNumber);
 			});
 
 			// Clone the container and wrap it
@@ -176,6 +233,42 @@ export class EquationReferencesFeature extends BaseFeature {
 
 		} catch (error) {
 			this.log(`Error: ${error}`);
+		}
+	}
+
+	private scrollToEquation(equationNumber: string): void {
+		const target = document.getElementById(`eq-${equationNumber}`);
+		if (target) {
+			// Enhanced smooth scroll with better visual feedback
+			target.scrollIntoView({ 
+				behavior: 'smooth', 
+				block: 'center',
+				inline: 'nearest'
+			});
+			
+			// Improved highlight effect with scale animation
+			const originalTransition = target.style.transition;
+			const originalBackground = target.style.backgroundColor;
+			const originalTransform = target.style.transform;
+			const originalBorderRadius = target.style.borderRadius;
+			
+			target.style.transition = 'all 0.3s ease';
+			target.style.backgroundColor = 'var(--text-accent)';
+			target.style.transform = 'scale(1.02)';
+			target.style.borderRadius = '8px';
+			
+			setTimeout(() => {
+				target.style.backgroundColor = originalBackground;
+				target.style.transform = originalTransform;
+				target.style.borderRadius = originalBorderRadius;
+				setTimeout(() => {
+					target.style.transition = originalTransition;
+				}, 300);
+			}, 800);
+		} else {
+			// Fallback: try standard anchor navigation
+			this.log(`Target equation eq-${equationNumber} not found, trying standard navigation`);
+			window.location.hash = `eq-${equationNumber}`;
 		}
 	}
 }

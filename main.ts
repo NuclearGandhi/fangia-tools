@@ -181,9 +181,9 @@ class FangiaToolsSettingTab extends PluginSettingTab {
 						if (activeFile && ViewUtils.isReadingView(this.app)) {
 							const figureFeature = this.plugin.features.find(f => f.getName() === 'FigureNumbering');
 							if (figureFeature && figureFeature.onFileOpen) {
-								setTimeout(() => {
+							setTimeout(() => {
 									figureFeature.onFileOpen!(activeFile.path);
-								}, 100);
+							}, 100);
 							}
 						}
 					}
