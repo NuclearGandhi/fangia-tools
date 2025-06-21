@@ -219,14 +219,14 @@ export class FigureNumberingFeature extends BaseFeature {
 					}
 					
 					// Find the next available figure in document order
-					const nextFigure = this.getNextAvailableFigure(figures, assignedFiguresSet);
+					const nextFigure = this.getNextAvailableFigure(figures, assignedFiguresSet!);
 					if (!nextFigure) {
 						this.log(`No more figures available for caption`);
 						return;
 					}
 					
 					// Mark this figure as assigned
-					assignedFiguresSet.add(nextFigure.id);
+					assignedFiguresSet!.add(nextFigure.id);
 					
 					// Remove any existing figure labels (just in case)
 					const cleanHTML = originalHTML
@@ -332,11 +332,15 @@ export class FigureNumberingFeature extends BaseFeature {
 				target.style.transform = 'scale(1.02)';
 				
 				setTimeout(() => {
-					target.style.boxShadow = originalBoxShadow;
-					target.style.transform = originalTransform;
-					setTimeout(() => {
-						target.style.transition = originalTransition;
-					}, 300);
+					if (target) {
+						target.style.boxShadow = originalBoxShadow;
+						target.style.transform = originalTransform;
+						setTimeout(() => {
+							if (target) {
+								target.style.transition = originalTransition;
+							}
+						}, 300);
+					}
 				}, 800);
 			}
 		} catch (error) {

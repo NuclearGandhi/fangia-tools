@@ -52,14 +52,10 @@ export class EquationReferencesFeature extends BaseFeature {
 					
 					// Check various patterns for equation references
 					const patterns = [
-						/^\((\d+(?:[.\-]\d+)*)\)$/,                           // (4.13) or (4-13)
-						/^\(([HWLPhlwlp]+\d+(?:[.\-]\d+)*)\)$/,               // (HW3.8) or (HW3-8) or (L2.5) or (P1-3)
-						/^Eq\.?\s*(\d+(?:[.\-]\d+)*)$/i,                      // Eq. 4.13 or Eq 4-13
-						/^Eq\.?\s*([HWLPhlwlp]+\d+(?:[.\-]\d+)*)$/i,          // Eq. HW3.8 or Eq HW3-8
-						/^Equation\s*(\d+(?:[.\-]\d+)*)$/i,                   // Equation 4.13 or Equation 4-13
-						/^Equation\s*([HWLPhlwlp]+\d+(?:[.\-]\d+)*)$/i,       // Equation HW3.8 or Equation HW3-8
-						/^\(Eq\.?\s*(\d+(?:[.\-]\d+)*)\)$/i,                  // (Eq. 4.13) or (Eq. 4-13)
-						/^\(Eq\.?\s*([HWLPhlwlp]+\d+(?:[.\-]\d+)*)\)$/i,      // (Eq. HW3.8) or (Eq. HW3-8)
+						/^\((\*?[A-Z]{0,2}\d+(?:[.\-]\d+)*[a-z]?)\)$/,                 // (4.13) or (FI7.54) or (BE3.5) or (*3.5) or (LA3.6a)
+						/^Eq\.?\s*(\*?[A-Z]{0,2}\d+(?:[.\-]\d+)*[a-z]?)$/i,            // Eq. 4.13 or Eq FI7.54 or Eq. BE3.5a or Eq. *3.5
+						/^Equation\s*(\*?[A-Z]{0,2}\d+(?:[.\-]\d+)*[a-z]?)$/i,         // Equation 4.13 or Equation FI7.54 or Equation BE3.5a or Equation *3.5
+						/^\(Eq\.?\s*(\*?[A-Z]{0,2}\d+(?:[.\-]\d+)*[a-z]?)\)$/i,        // (Eq. 4.13) or (Eq. FI7.54) or (Eq. BE3.5a) or (Eq. *3.5)
 					];
 
 					for (const pattern of patterns) {
@@ -126,8 +122,7 @@ export class EquationReferencesFeature extends BaseFeature {
 				
 				// Check if this looks like an equation tag (support prefixes and different separators)
 				const tagPatterns = [
-					/^\((\d+(?:[.\-]\d+)*)\)$/,                    // (4.13) or (4-13)
-					/^\(([HWLPhlwlp]+\d+(?:[.\-]\d+)*)\)$/         // (HW3.8) or (HW3-8) or (L2.5) or (P1-3)
+					/^\((\*?[A-Z]{0,2}\d+(?:[.\-]\d+)*[a-z]?)\)$/         // (4.13) or (FI7.54) or (BE3.5) or (*3.5) or (LA3.6a)
 				];
 				
 				for (const tagPattern of tagPatterns) {
@@ -309,12 +304,16 @@ export class EquationReferencesFeature extends BaseFeature {
 			target.style.borderRadius = '8px';
 			
 			setTimeout(() => {
-				target.style.backgroundColor = originalBackground;
-				target.style.transform = originalTransform;
-				target.style.borderRadius = originalBorderRadius;
-				setTimeout(() => {
-					target.style.transition = originalTransition;
-				}, 300);
+				if (target) {
+					target.style.backgroundColor = originalBackground;
+					target.style.transform = originalTransform;
+					target.style.borderRadius = originalBorderRadius;
+					setTimeout(() => {
+						if (target) {
+							target.style.transition = originalTransition;
+						}
+					}, 300);
+				}
 			}, 800);
 		} else {
 			// Fallback: try standard anchor navigation
@@ -327,12 +326,10 @@ export class EquationReferencesFeature extends BaseFeature {
 // Alternative approach: Markdown preprocessor
 export class EquationReferencesPreprocessor {
 	static processMarkdown(content: string): string {
-		// Pattern to match equation references like $\text{(4.13)}$, $(HW3.8)$, etc.
+		// Pattern to match equation references like $\text{(4.13)}$, $(FI7.54)$, etc.
 		const patterns = [
-			/\$\\text\{(\([0-9]+(?:[.\-][0-9]+)*\))\}\$/g,              // $\text{(4.13)}$ or $\text{(4-13)}$
-			/\$\\text\{(\([HWLPhlwlp]+[0-9]+(?:[.\-][0-9]+)*\))\}\$/g,  // $\text{(HW3.8)}$ or $\text{(HW3-8)}$
-			/\$(\([0-9]+(?:[.\-][0-9]+)*\))\$/g,                        // $(4.13)$ or $(4-13)$
-			/\$(\([HWLPhlwlp]+[0-9]+(?:[.\-][0-9]+)*\))\$/g,            // $(HW3.8)$ or $(HW3-8)$
+			/\$\\text\{(\(\*?[A-Z]{0,2}[0-9]+(?:[.\-][0-9]+)*[a-z]?\))\}\$/g,    // $\text{(4.13)}$ or $\text{(FI7.54)}$ or $\text{(*3.5)}$
+			/\$(\(\*?[A-Z]{0,2}[0-9]+(?:[.\-][0-9]+)*[a-z]?\))\$/g,              // $(4.13)$ or $(FI7.54)$ or $(*3.5)$
 		];
 
 		let processedContent = content;
